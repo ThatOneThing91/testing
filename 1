@@ -1,0 +1,166 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local LocalPlayer = Players.LocalPlayer
+
+local InventoryEvents = ReplicatedStorage
+    :WaitForChild("Events")
+    :WaitForChild("Inventory")
+
+local WashEvents = ReplicatedStorage
+    :WaitForChild("Events")
+    :WaitForChild("Wash")
+
+local GetPlayerInventory = InventoryEvents:WaitForChild("GetPlayerInventory")
+local GetWashableItems = WashEvents:WaitForChild("GetWashableItems")
+local GetSlotState = WashEvents:WaitForChild("GetSlotState")
+
+local AutoWashScan = true
+
+local function IsUUID(value)
+    return typeof(value) == "string"
+        and value:match(
+            "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+        ) ~= nil
+end
+
+local function FindDirty(value, found, seen)
+    if typeof(value) ~= "table" then
+        return
+    end
+
+    seen = seen or {}
+
+    if seen[value] then
+        return
+    end
+
+    seen[value] = true
+
+    local name = value.name or value.Name
+
+    if name == "Dirty" then
+        local item = {
+            GUIDs = {},
+            Data = value
+        }
+
+        for k, v in pairs(value) do
+            if IsUUID(v) then
+                table.insert(item.GUIDs, v)
+            end
+
+            if IsUUID(k) then
+                table.insert(item.GUIDs, k)
+            end
+        end
+
+        table.insert(found, item)
+    end
+
+    for k, v in pairs(value) do
+        if typeof(v) == "table" then
+            FindDirty(v, found, seen)
+        end
+    end
+end
+
+local function GetDirtyItems()
+    local success, inventory = pcall(function()
+        return GetPlayerInventory:InvokeServer()
+    end)
+
+    if not success or typeof(inventory) ~= "table" then
+        return {}
+    end
+
+    local found = {}
+    FindDirty(inventory, found)
+
+    return found
+end
+
+local function GetWashState()
+    local success, state = pcall(function()
+        return GetSlotState:InvokeServer()
+    end)
+
+    if not success or typeof(state) ~= "table" then
+        return nil
+    end
+
+    return state
+end
+
+local function PrintStatus()
+    local dirty = GetDirtyItems()
+    local slots = GetWashState()
+
+    print("")
+    print("==========================================")
+    print("              AUTO WASH SCAN")
+    print("==========================================")
+
+    print("Dirty items:", #dirty)
+
+    for i, item in ipairs(dirty) do
+        print("")
+        print("Dirty #" .. i)
+
+        if #item.GUIDs > 0 then
+            for _, guid in ipairs(item.GUIDs) do
+                print("  GUID:", guid)
+            end
+        else
+            print("  GUID: not found")
+        end
+    end
+
+    print("")
+    print("WASH SLOTS")
+
+    if slots and slots.slots then
+        for slotNumber, slot in pairs(slots.slots) do
+            print("")
+            print("Slot:", slotNumber)
+
+            if slot.ItemData then
+                print("  Occupied: YES")
+                print("  ItemId:", slot.ItemData.ItemId)
+                print("  Condition:", slot.ItemData.Condition)
+                print("  Source:", slot.ItemData.SourceGarageId)
+                print("  Duration:", slot.Duration)
+                print("  StartTime:", slot.StartTime)
+                print("  ItemGUID:", slot.ItemGUID)
+
+                local finishTime =
+                    tonumber(slot.StartTime or 0) +
+                    tonumber(slot.Duration or 0)
+
+                print("  FinishTime:", finishTime)
+                print("  CurrentTime:", os.time())
+                print(
+                    "  Finished:",
+                    os.time() >= finishTime
+                )
+            else
+                print("  Occupied: NO")
+            end
+        end
+    else
+        print("Could not read slot table.")
+    end
+
+    print("")
+    print("==========================================")
+end
+
+task.spawn(function()
+    while AutoWashScan do
+        PrintStatus()
+        task.wait(3)
+    end
+end)
+
+print("Auto Wash scanner started.")
+print("It is READ-ONLY and will not start or collect washes.")
