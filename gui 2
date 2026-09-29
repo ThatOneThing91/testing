@@ -1,0 +1,2423 @@
+--//========================================================
+--// STORAGE HUNTERS HUB
+--// Full Hub + Farming Tab
+--//========================================================
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+--//========================================================
+--// SERVICES
+--//========================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+
+--//========================================================
+--// REMOVE OLD GUI
+--//========================================================
+
+pcall(function()
+    local old = CoreGui:FindFirstChild("StorageHuntersHub")
+    if old then
+        old:Destroy()
+    end
+end)
+
+--//========================================================
+--// SETTINGS
+--//========================================================
+
+local MIN_WIDTH = 300
+local MIN_HEIGHT = 260
+local MAX_WIDTH = 700
+local MAX_HEIGHT = 750
+
+local ThemeColor = Color3.fromRGB(125, 25, 25)
+
+local DarkBackground = Color3.fromRGB(25, 25, 28)
+local DarkerBackground = Color3.fromRGB(18, 18, 21)
+local ButtonBackground = Color3.fromRGB(35, 35, 39)
+local OffColor = Color3.fromRGB(55, 55, 60)
+local TextColor = Color3.fromRGB(240, 240, 240)
+local MutedText = Color3.fromRGB(160, 160, 165)
+
+--//========================================================
+--// STATE
+--//========================================================
+
+local Features = {}
+local ToggleObjects = {}
+
+local CurrentTab = "Main"
+local MenuVisible = true
+
+--//========================================================
+--// NOTIFICATION
+--//========================================================
+
+local function Notify(title, text, duration)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title,
+            Text = text,
+            Duration = duration or 3
+        })
+    end)
+end
+
+--//========================================================
+--// SCREEN GUI
+--//========================================================
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "StorageHuntersHub"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = CoreGui
+
+--//========================================================
+--// MAIN WINDOW
+--//========================================================
+
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.new(0, 380, 0, 390)
+Main.Position = UDim2.new(0.5, -190, 0.5, -195)
+Main.BackgroundColor3 = DarkBackground
+Main.BorderSizePixel = 0
+Main.ClipsDescendants = true
+Main.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 10)
+MainCorner.Parent = Main
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = ThemeColor
+MainStroke.Thickness = 1.5
+MainStroke.Transparency = 0.15
+MainStroke.Parent = Main
+
+--//========================================================
+--// TITLE BAR
+--//========================================================
+
+local TitleBar = Instance.new("Frame")
+TitleBar.Name = "TitleBar"
+TitleBar.Size = UDim2.new(1, 0, 0, 38)
+TitleBar.BackgroundColor3 = ThemeColor
+TitleBar.BorderSizePixel = 0
+TitleBar.ZIndex = 10
+TitleBar.Parent = Main
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 10)
+TitleCorner.Parent = TitleBar
+
+local TitleCover = Instance.new("Frame")
+TitleCover.Size = UDim2.new(1, 0, 0, 10)
+TitleCover.Position = UDim2.new(0, 0, 1, -10)
+TitleCover.BackgroundColor3 = ThemeColor
+TitleCover.BorderSizePixel = 0
+TitleCover.ZIndex = 10
+TitleCover.Parent = TitleBar
+
+local Title = Instance.new("TextLabel")
+Title.BackgroundTransparency = 1
+Title.Position = UDim2.new(0, 12, 0, 0)
+Title.Size = UDim2.new(1, -100, 1, 0)
+Title.Text = "STORAGE HUNTERS HUB"
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 14
+Title.TextColor3 = TextColor
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.ZIndex = 11
+Title.Parent = TitleBar
+
+--// Theme button
+
+local ThemeButton = Instance.new("TextButton")
+ThemeButton.Size = UDim2.new(0, 30, 0, 30)
+ThemeButton.Position = UDim2.new(1, -65, 0, 4)
+ThemeButton.BackgroundTransparency = 1
+ThemeButton.Text = "🎨"
+ThemeButton.TextSize = 16
+ThemeButton.ZIndex = 12
+ThemeButton.Parent = TitleBar
+
+--// Close button
+
+local CloseButton = Instance.new("TextButton")
+CloseButton.Size = UDim2.new(0, 30, 0, 30)
+CloseButton.Position = UDim2.new(1, -32, 0, 4)
+CloseButton.BackgroundTransparency = 1
+CloseButton.Text = "×"
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.TextSize = 21
+CloseButton.TextColor3 = TextColor
+CloseButton.ZIndex = 12
+CloseButton.Parent = TitleBar
+
+--//========================================================
+--// TAB BAR
+--//========================================================
+
+local TabBar = Instance.new("Frame")
+TabBar.Size = UDim2.new(1, -20, 0, 38)
+TabBar.Position = UDim2.new(0, 10, 0, 43)
+TabBar.BackgroundTransparency = 1
+TabBar.ZIndex = 5
+TabBar.Parent = Main
+
+local MainTab = Instance.new("TextButton")
+MainTab.Size = UDim2.new(0.5, -4, 1, 0)
+MainTab.Position = UDim2.new(0, 0, 0, 0)
+MainTab.BackgroundColor3 = ThemeColor
+MainTab.BorderSizePixel = 0
+MainTab.Text = "MAIN"
+MainTab.Font = Enum.Font.GothamBold
+MainTab.TextSize = 12
+MainTab.TextColor3 = TextColor
+MainTab.AutoButtonColor = false
+MainTab.ZIndex = 6
+MainTab.Parent = TabBar
+
+local MainTabCorner = Instance.new("UICorner")
+MainTabCorner.CornerRadius = UDim.new(0, 6)
+MainTabCorner.Parent = MainTab
+
+local FarmingTab = Instance.new("TextButton")
+FarmingTab.Size = UDim2.new(0.5, -4, 1, 0)
+FarmingTab.Position = UDim2.new(0.5, 4, 0, 0)
+FarmingTab.BackgroundColor3 = ButtonBackground
+FarmingTab.BorderSizePixel = 0
+FarmingTab.Text = "FARMING"
+FarmingTab.Font = Enum.Font.GothamBold
+FarmingTab.TextSize = 12
+FarmingTab.TextColor3 = MutedText
+FarmingTab.AutoButtonColor = false
+FarmingTab.ZIndex = 6
+FarmingTab.Parent = TabBar
+
+local FarmingTabCorner = Instance.new("UICorner")
+FarmingTabCorner.CornerRadius = UDim.new(0, 6)
+FarmingTabCorner.Parent = FarmingTab
+
+--//========================================================
+--// SCROLLING AREA
+--//========================================================
+
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Name = "Scroll"
+Scroll.Position = UDim2.new(0, 10, 0, 88)
+Scroll.Size = UDim2.new(1, -20, 1, -98)
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel = 0
+Scroll.ScrollBarThickness = 4
+Scroll.ScrollBarImageColor3 = ThemeColor
+Scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+Scroll.Parent = Main
+
+--//========================================================
+--// PAGES
+--//========================================================
+
+local MainPage = Instance.new("Frame")
+MainPage.Name = "MainPage"
+MainPage.Size = UDim2.new(1, -6, 0, 0)
+MainPage.AutomaticSize = Enum.AutomaticSize.Y
+MainPage.BackgroundTransparency = 1
+MainPage.Parent = Scroll
+
+local MainLayout = Instance.new("UIListLayout")
+MainLayout.Padding = UDim.new(0, 7)
+MainLayout.SortOrder = Enum.SortOrder.LayoutOrder
+MainLayout.Parent = MainPage
+
+local FarmingPage = Instance.new("Frame")
+FarmingPage.Name = "FarmingPage"
+FarmingPage.Size = UDim2.new(1, -6, 0, 0)
+FarmingPage.AutomaticSize = Enum.AutomaticSize.Y
+FarmingPage.BackgroundTransparency = 1
+FarmingPage.Visible = false
+FarmingPage.Parent = Scroll
+
+local FarmingLayout = Instance.new("UIListLayout")
+FarmingLayout.Padding = UDim.new(0, 7)
+FarmingLayout.SortOrder = Enum.SortOrder.LayoutOrder
+FarmingLayout.Parent = FarmingPage
+
+--//========================================================
+--// DROPDOWN OVERLAY
+--//========================================================
+--// IMPORTANT:
+--// This is OUTSIDE the ScrollingFrame so dropdowns
+--// cannot get clipped by the scrolling container.
+
+local DropdownOverlay = Instance.new("Frame")
+DropdownOverlay.Name = "DropdownOverlay"
+DropdownOverlay.Size = UDim2.fromScale(1, 1)
+DropdownOverlay.Position = UDim2.fromScale(0, 0)
+DropdownOverlay.BackgroundTransparency = 1
+DropdownOverlay.BorderSizePixel = 0
+DropdownOverlay.Visible = false
+DropdownOverlay.ZIndex = 200
+DropdownOverlay.Parent = ScreenGui
+
+local ActiveDropdown = nil
+local ActiveDropdownButton = nil
+
+local function closeDropdown()
+    if ActiveDropdown then
+        ActiveDropdown:Destroy()
+        ActiveDropdown = nil
+    end
+
+    ActiveDropdownButton = nil
+    DropdownOverlay.Visible = false
+end
+
+--//========================================================
+--// HELPERS
+--//========================================================
+
+local function addPadding(parent, left, right, top, bottom)
+    local padding = Instance.new("UIPadding")
+    padding.PaddingLeft = UDim.new(0, left or 0)
+    padding.PaddingRight = UDim.new(0, right or 0)
+    padding.PaddingTop = UDim.new(0, top or 0)
+    padding.PaddingBottom = UDim.new(0, bottom or 0)
+    padding.Parent = parent
+    return padding
+end
+
+local function createHeader(parent, titleText, subText)
+
+    local Header = Instance.new("Frame")
+    Header.Size = UDim2.new(1, 0, 0, 52)
+    Header.BackgroundColor3 = DarkerBackground
+    Header.BorderSizePixel = 0
+    Header.Parent = parent
+
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 7)
+    Corner.Parent = Header
+
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = ThemeColor
+    Stroke.Transparency = 0.65
+    Stroke.Parent = Header
+
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Position = UDim2.new(0, 12, 0, 5)
+    TitleLabel.Size = UDim2.new(1, -24, 0, 20)
+    TitleLabel.Text = titleText
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextSize = 13
+    TitleLabel.TextColor3 = TextColor
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.Parent = Header
+
+    local SubLabel = Instance.new("TextLabel")
+    SubLabel.BackgroundTransparency = 1
+    SubLabel.Position = UDim2.new(0, 12, 0, 26)
+    SubLabel.Size = UDim2.new(1, -24, 0, 18)
+    SubLabel.Text = subText or ""
+    SubLabel.Font = Enum.Font.Gotham
+    SubLabel.TextSize = 10
+    SubLabel.TextColor3 = MutedText
+    SubLabel.TextXAlignment = Enum.TextXAlignment.Left
+    SubLabel.Parent = Header
+
+    return Header, SubLabel
+end
+
+--//========================================================
+--// TOGGLE CREATOR
+--//========================================================
+
+local function createToggleBar(name, callback, parent)
+
+    parent = parent or MainPage
+
+    local Container = Instance.new("Frame")
+    Container.Size = UDim2.new(1, 0, 0, 42)
+    Container.BackgroundColor3 = DarkerBackground
+    Container.BorderSizePixel = 0
+    Container.Parent = parent
+
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 7)
+    Corner.Parent = Container
+
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = ThemeColor
+    Stroke.Transparency = 0.75
+    Stroke.Parent = Container
+
+    local Label = Instance.new("TextLabel")
+    Label.BackgroundTransparency = 1
+    Label.Position = UDim2.new(0, 12, 0, 0)
+    Label.Size = UDim2.new(1, -75, 1, 0)
+    Label.Text = name
+    Label.Font = Enum.Font.GothamMedium
+    Label.TextSize = 12
+    Label.TextColor3 = TextColor
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Container
+
+    local Toggle = Instance.new("TextButton")
+    Toggle.Size = UDim2.new(0, 48, 0, 25)
+    Toggle.Position = UDim2.new(1, -59, 0.5, -12)
+    Toggle.BackgroundColor3 = OffColor
+    Toggle.BorderSizePixel = 0
+    Toggle.Text = "OFF"
+    Toggle.Font = Enum.Font.GothamBold
+    Toggle.TextSize = 9
+    Toggle.TextColor3 = TextColor
+    Toggle.AutoButtonColor = false
+    Toggle.Parent = Container
+
+    local ToggleCorner = Instance.new("UICorner")
+    ToggleCorner.CornerRadius = UDim.new(1, 0)
+    ToggleCorner.Parent = Toggle
+
+    local state = false
+
+    local function update(value)
+        state = value
+
+        if state then
+            Toggle.BackgroundColor3 = ThemeColor
+            Toggle.Text = "ON"
+        else
+            Toggle.BackgroundColor3 = OffColor
+            Toggle.Text = "OFF"
+        end
+    end
+
+    Toggle.MouseButton1Click:Connect(function()
+
+        state = not state
+        update(state)
+
+        Features[name] = state
+
+        local success, result = pcall(function()
+            return callback(state)
+        end)
+
+        if not success then
+            warn("[Storage Hunters] " .. name .. ": " .. tostring(result))
+        end
+    end)
+
+    ToggleObjects[name] = Toggle
+
+    return Container, Toggle, update
+end
+
+--//========================================================
+--// ACTION BUTTON
+--//========================================================
+
+local function createActionButton(name, callback, parent)
+
+    parent = parent or MainPage
+
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(1, 0, 0, 42)
+    Button.BackgroundColor3 = DarkerBackground
+    Button.BorderSizePixel = 0
+    Button.Text = name
+    Button.Font = Enum.Font.GothamMedium
+    Button.TextSize = 12
+    Button.TextColor3 = TextColor
+    Button.AutoButtonColor = false
+    Button.Parent = parent
+
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 7)
+    Corner.Parent = Button
+
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = ThemeColor
+    Stroke.Transparency = 0.7
+    Stroke.Parent = Button
+
+    Button.MouseEnter:Connect(function()
+        Button.BackgroundColor3 = ButtonBackground
+    end)
+
+    Button.MouseLeave:Connect(function()
+        Button.BackgroundColor3 = DarkerBackground
+    end)
+
+    Button.MouseButton1Click:Connect(function()
+        local success, result = pcall(callback)
+
+        if not success then
+            warn("[Storage Hunters] " .. name .. ": " .. tostring(result))
+            Notify("Storage Hunters", "Error in " .. name, 3)
+        end
+    end)
+
+    return Button
+end
+
+--//========================================================
+--// INSTANT UNLOAD
+--//========================================================
+
+local function InstantUnload()
+
+    local Events = ReplicatedStorage:FindFirstChild("Events")
+    if not Events then
+        return
+    end
+
+    local Vehicles = Events:FindFirstChild("Vehicles")
+    if not Vehicles then
+        return
+    end
+
+    local GetVehicleItems = Vehicles:FindFirstChild("GetVehicleItems")
+    local TransferVehicleItems = Vehicles:FindFirstChild("TransferVehicleItemsToInventory")
+
+    if not GetVehicleItems or not TransferVehicleItems then
+        Notify("Instant Unload", "Vehicle remotes not found", 3)
+        return
+    end
+
+    local VehicleGUID = LocalPlayer:GetAttribute("EquippedVehicle")
+
+    if not VehicleGUID then
+        Notify("Instant Unload", "No equipped vehicle found", 3)
+        return
+    end
+
+    local vehicleModel
+
+    local function findVehicle(parent)
+
+        for _, obj in ipairs(parent:GetChildren()) do
+
+            if obj:IsA("Model") then
+
+                local guid =
+                    obj:GetAttribute("VehicleGUID")
+                    or obj:GetAttribute("GUID")
+
+                if guid == VehicleGUID then
+                    return obj
+                end
+
+                local found = findVehicle(obj)
+
+                if found then
+                    return found
+                end
+            end
+        end
+    end
+
+    vehicleModel = findVehicle(workspace)
+
+    local Character = LocalPlayer.Character
+    local Humanoid =
+        Character and Character:FindFirstChildOfClass("Humanoid")
+
+    if Humanoid and vehicleModel then
+
+        pcall(function()
+
+            local seat =
+                vehicleModel:FindFirstChildWhichIsA(
+                    "VehicleSeat",
+                    true
+                )
+
+            if seat then
+                seat:Sit(Humanoid)
+            end
+
+        end)
+    end
+
+    local success, data =
+        pcall(function()
+            return GetVehicleItems:InvokeServer(VehicleGUID)
+        end)
+
+    if not success or not data then
+        Notify("Instant Unload", "Could not retrieve vehicle items", 3)
+        return
+    end
+
+    local GUIDs = {}
+
+    local function collect(value)
+
+        if typeof(value) == "string" then
+
+            if #value >= 8 then
+                table.insert(GUIDs, value)
+            end
+
+        elseif typeof(value) == "table" then
+
+            for key, child in pairs(value) do
+
+                if typeof(key) == "string" then
+
+                    if #key >= 8 then
+                        table.insert(GUIDs, key)
+                    end
+                end
+
+                collect(child)
+            end
+        end
+    end
+
+    collect(data)
+
+    if #GUIDs == 0 then
+        Notify("Instant Unload", "Vehicle is empty", 2)
+        return
+    end
+
+    pcall(function()
+        TransferVehicleItems:FireServer(GUIDs)
+    end)
+
+    pcall(function()
+        LocalPlayer:SetAttribute("CargoWeight", 0)
+    end)
+
+    Notify(
+        "Instant Unload",
+        "Unloaded " .. tostring(#GUIDs) .. " item(s)",
+        3
+    )
+end
+
+--//========================================================
+--// AUTO BID
+--//========================================================
+
+local BidEvent
+
+pcall(function()
+    BidEvent =
+        ReplicatedStorage
+            :WaitForChild("Events")
+            :WaitForChild("Auction")
+            :WaitForChild("Bid")
+end)
+
+local function AutoBidLoop(enabled)
+
+    if not enabled then
+        return
+    end
+
+    task.spawn(function()
+
+        while Features["Auto Bid"] do
+
+            pcall(function()
+
+                local PlayerGui = LocalPlayer:FindFirstChild("PlayerGui")
+
+                local UI =
+                    PlayerGui
+                    and PlayerGui:FindFirstChild("UIControllerGui")
+
+                local Container =
+                    UI
+                    and UI:FindFirstChild("AuctionBiddingContainer")
+
+                local BidButton =
+                    Container
+                    and Container:FindFirstChild("BidButton")
+
+                if BidButton
+                    and BidButton.Visible
+                    and BidButton.Active
+                    and BidEvent then
+
+                    BidEvent:FireServer()
+                end
+
+            end)
+
+            task.wait(0.15)
+        end
+    end)
+end
+
+--//========================================================
+--// AUTO BASKETBALL
+--//========================================================
+
+local function AutoBasketballLoop(enabled)
+
+    if not enabled then
+        return
+    end
+
+    task.spawn(function()
+
+        while Features["Auto Basketball"] do
+
+            local Character = LocalPlayer.Character
+            local HRP =
+                Character
+                and Character:FindFirstChild("HumanoidRootPart")
+
+            local Ball
+
+            pcall(function()
+                Ball =
+                    workspace
+                        :FindFirstChild("ThatOneThing91")
+                        and workspace.ThatOneThing91:FindFirstChild("Basketball")
+            end)
+
+            if not Ball then
+                Notify("Basketball", "BALL NOT FOUND", 2)
+                task.wait(1)
+                continue
+            end
+
+            if HRP then
+
+                pcall(function()
+
+                    HRP.CFrame =
+                        CFrame.new(
+                            -341.5028991699219,
+                            1732.2828369140625,
+                            -414.27392578125
+                        )
+
+                end)
+            end
+
+            pcall(function()
+
+                if firetouchinterest then
+                    firetouchinterest(
+                        Ball,
+                        HRP,
+                        0
+                    )
+
+                    firetouchinterest(
+                        Ball,
+                        HRP,
+                        1
+                    )
+                end
+
+                if fireproximityprompt then
+
+                    local Prompt =
+                        Ball:FindFirstChildWhichIsA(
+                            "ProximityPrompt",
+                            true
+                        )
+
+                    if Prompt then
+                        fireproximityprompt(Prompt)
+                    end
+                end
+            end)
+
+            task.wait(0.5)
+        end
+    end)
+end
+
+--//========================================================
+--// INSTANT AUCTION ENTRY
+--//========================================================
+
+local AuctionPromptConnections = {}
+
+local function MakeAuctionPromptsInstant()
+
+    local function check(obj)
+
+        if obj:IsA("ProximityPrompt")
+            and obj.Name == "EnterAuction" then
+
+            pcall(function()
+                obj.HoldDuration = 0
+            end)
+        end
+    end
+
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        check(obj)
+    end
+
+    table.insert(
+        AuctionPromptConnections,
+        workspace.DescendantAdded:Connect(check)
+    )
+
+    Notify(
+        "Instant Auction Entry",
+        "Auction prompts are now instant",
+        3
+    )
+end
+
+--//========================================================
+--// TREE TELEPORT
+--//========================================================
+
+local function TreeTeleport()
+
+    local success = pcall(function()
+
+        local Assets =
+            workspace
+                :WaitForChild("BBOW Builder Assets")
+
+        local Buildings =
+            Assets
+                :WaitForChild("Other Buildings and  Decoration")
+
+        local Trees =
+            Buildings:WaitForChild("Trees")
+
+        local Order = {
+            8,
+            "Apple Tree",
+            4,
+            2,
+            6,
+            5,
+            7,
+            3
+        }
+
+        local Character = LocalPlayer.Character
+        local HRP =
+            Character
+            and Character:FindFirstChild("HumanoidRootPart")
+
+        if not HRP then
+            return
+        end
+
+        for _, item in ipairs(Order) do
+
+            if not Features["Tree Teleport"] then
+                break
+            end
+
+            local target
+
+            if typeof(item) == "number" then
+                target = Trees:FindFirstChild(tostring(item))
+            else
+                target = Trees:FindFirstChild(item, true)
+            end
+
+            if target then
+
+                local part
+
+                if target:IsA("BasePart") then
+                    part = target
+                elseif target:IsA("Model") then
+                    part =
+                        target.PrimaryPart
+                        or target:FindFirstChildWhichIsA(
+                            "BasePart",
+                            true
+                        )
+                else
+                    part =
+                        target:FindFirstChildWhichIsA(
+                            "BasePart",
+                            true
+                        )
+                end
+
+                if part then
+
+                    HRP.CFrame =
+                        part.CFrame
+                        + Vector3.new(0, 4, 0)
+
+                    task.wait(0.35)
+                end
+            end
+        end
+
+    end)
+
+    if not success then
+        Notify("Tree Teleport", "Tree search failed", 3)
+    end
+end
+
+--//========================================================
+--// HAY COLLECTOR
+--//========================================================
+
+local function HayCollectorLoop(enabled)
+
+    if not enabled then
+        return
+    end
+
+    task.spawn(function()
+
+        while Features["Hay Collector"] do
+
+            pcall(function()
+
+                local Assets =
+                    workspace:FindFirstChild(
+                        "BBOW Builder Assets"
+                    )
+
+                local Buildings =
+                    Assets
+                    and Assets:FindFirstChild(
+                        "Other Buildings and  Decoration"
+                    )
+
+                local Trees =
+                    Buildings
+                    and Buildings:FindFirstChild("Trees")
+
+                if not Trees then
+                    return
+                end
+
+                local Targets = {
+                    "433",
+                    "479",
+                    "449",
+                    "399",
+                    "88",
+                    "394",
+                    "242",
+                    "Hay",
+                    "408",
+                    "454",
+                    "373"
+                }
+
+                local Character =
+                    LocalPlayer.Character
+
+                local HRP =
+                    Character
+                    and Character:FindFirstChild(
+                        "HumanoidRootPart"
+                    )
+
+                if not HRP then
+                    return
+                end
+
+                for _, name in ipairs(Targets) do
+
+                    if not Features["Hay Collector"] then
+                        break
+                    end
+
+                    local target =
+                        Trees:FindFirstChild(name)
+
+                    if target then
+
+                        local part
+
+                        if target:IsA("BasePart") then
+                            part = target
+                        else
+                            part =
+                                target:FindFirstChildWhichIsA(
+                                    "BasePart",
+                                    true
+                                )
+                        end
+
+                        if part then
+                            HRP.CFrame =
+                                part.CFrame
+                                + Vector3.new(0, 3, 0)
+
+                            task.wait(0.2)
+                        end
+                    end
+                end
+            end)
+
+            task.wait(0.5)
+        end
+    end)
+end
+
+--//========================================================
+--// POLICE AUCTION
+--//========================================================
+
+local function PoliceAuction()
+
+    local Garages =
+        workspace:FindFirstChild("_Debris")
+        and workspace._Debris:FindFirstChild("Garages")
+
+    if not Garages then
+        Notify("Police Auction", "Garages not found", 3)
+        return
+    end
+
+    local Character = LocalPlayer.Character
+    local HRP =
+        Character
+        and Character:FindFirstChild("HumanoidRootPart")
+
+    if not HRP then
+        return
+    end
+
+    for _, garage in ipairs(Garages:GetChildren()) do
+
+        if garage:FindFirstChild("PoliceWarning", true) then
+
+            local Entry =
+                garage:FindFirstChild("EntrySquare", true)
+
+            local PromptPart =
+                Entry
+                and Entry:FindFirstChild(
+                    "PromptPart",
+                    true
+                )
+
+            local Target =
+                PromptPart
+                or Entry
+                or garage:FindFirstChildWhichIsA(
+                    "BasePart",
+                    true
+                )
+
+            if Target then
+
+                if Target:IsA("BasePart") then
+
+                    HRP.CFrame =
+                        Target.CFrame
+                        + Vector3.new(0, 3, 0)
+
+                    Notify(
+                        "Police Auction",
+                        "Police auction found",
+                        3
+                    )
+
+                    return
+                end
+            end
+        end
+    end
+
+    Notify(
+        "Police Auction",
+        "No police auction found",
+        3
+    )
+end
+
+--//========================================================
+--// AUTO UNFAVORITE
+--//========================================================
+
+local function AutoUnfavorite()
+
+    local InventoryEvents =
+        ReplicatedStorage
+            :FindFirstChild("Events")
+            and ReplicatedStorage.Events:FindFirstChild(
+                "Inventory"
+            )
+
+    if not InventoryEvents then
+        Notify("Auto Unfavorite", "Inventory events not found", 3)
+        return
+    end
+
+    local GetInventory =
+        InventoryEvents:FindFirstChild(
+            "GetPlayerInventory"
+        )
+
+    local ToggleFavorite =
+        InventoryEvents:FindFirstChild(
+            "ToggleFavoriteItem"
+        )
+
+    if not GetInventory or not ToggleFavorite then
+        Notify("Auto Unfavorite", "Inventory remotes missing", 3)
+        return
+    end
+
+    local success, inventory =
+        pcall(function()
+            return GetInventory:InvokeServer()
+        end)
+
+    if not success or not inventory then
+        Notify("Auto Unfavorite", "Could not get inventory", 3)
+        return
+    end
+
+    local Count = 0
+
+    local function process(tbl)
+
+        if typeof(tbl) ~= "table" then
+            return
+        end
+
+        for key, value in pairs(tbl) do
+
+            if typeof(value) == "table" then
+
+                if value.Favorited == true
+                    or value.Favorite == true then
+
+                    local id =
+                        value.UUID
+                        or value.Id
+                        or value.ID
+                        or key
+
+                    pcall(function()
+                        ToggleFavorite:InvokeServer(id)
+                    end)
+
+                    Count += 1
+                end
+
+                process(value)
+
+            elseif typeof(key) == "string" then
+
+                if #key >= 8 then
+                    -- UUID-like inventory entry
+                end
+            end
+        end
+    end
+
+    process(inventory)
+
+    Notify(
+        "Auto Unfavorite",
+        "Processed " .. tostring(Count) .. " item(s)",
+        3
+    )
+end
+
+--//========================================================
+--// MAIN TAB FEATURES
+--//========================================================
+
+createToggleBar(
+    "Instant Unload",
+    function(enabled)
+
+        if enabled then
+
+            task.spawn(function()
+
+                while Features["Instant Unload"] do
+
+                    pcall(InstantUnload)
+
+                    task.wait(1)
+                end
+
+            end)
+
+        end
+    end
+)
+
+createToggleBar(
+    "Auto Bid",
+    function(enabled)
+        AutoBidLoop(enabled)
+    end
+)
+
+createToggleBar(
+    "Auto Basketball",
+    function(enabled)
+        AutoBasketballLoop(enabled)
+    end
+)
+
+createActionButton(
+    "Instant Auction Entry",
+    function()
+        MakeAuctionPromptsInstant()
+    end
+)
+
+createToggleBar(
+    "Tree Teleport",
+    function(enabled)
+
+        if enabled then
+            TreeTeleport()
+        end
+
+    end
+)
+
+createToggleBar(
+    "Hay Collector",
+    function(enabled)
+        HayCollectorLoop(enabled)
+    end
+)
+
+createActionButton(
+    "Police Auction",
+    function()
+        PoliceAuction()
+    end
+)
+
+createActionButton(
+    "Auto Unfavorite",
+    function()
+        AutoUnfavorite()
+    end
+)
+
+--//========================================================
+--// FARMING AREA DATA
+--//========================================================
+
+local AuctionAreas = {
+
+    ["The Mines"] = {
+        "Mine Bunker",
+        "Ore Hopper Depot",
+        "Prospector's Shack",
+        "Twin Drill Rig"
+    },
+
+    ["Back Alley"] = {
+        "Camo Shop Front",
+        "Shop Front"
+    },
+
+    ["Business Bay"] = {
+        "High End Apartment",
+        "Luxury Hotel",
+        "The Pointer"
+    },
+
+    ["Farmyard"] = {
+        "Stable Garage",
+        "Barn Garage"
+    },
+
+    ["Junk Yard"] = {
+        "Scrap Garage 2",
+        "Scrap Garage 3"
+    },
+
+    ["Lucky Beach"] = {
+        "Beach Hut Garage",
+        "Surf Shack Garage",
+        "Boat House Garage"
+    },
+
+    ["Power Plant"] = {
+        "Power Plant Tier 1 Garage",
+        "Power Plant Tier 2 Garage",
+        "Power Plant Tier 3 Garage",
+        "Power Plant Tier 4 Garage"
+    },
+
+    ["Shipyard"] = {
+        "Small Container Garage",
+        "Warehouse Garage",
+        "Large Container Garage"
+    }
+}
+
+local AreaOrder = {
+    "The Mines",
+    "Back Alley",
+    "Business Bay",
+    "Farmyard",
+    "Junk Yard",
+    "Lucky Beach",
+    "Power Plant",
+    "Shipyard"
+}
+
+local SelectedArea = "The Mines"
+local SelectedFarm = AuctionAreas[SelectedArea][1]
+
+--//========================================================
+--// FARMING HEADER
+--//========================================================
+
+local FarmingHeader, FarmingSubText =
+    createHeader(
+        FarmingPage,
+        "AUCTION FARMING",
+        SelectedArea .. " • " .. SelectedFarm
+    )
+
+FarmingHeader.LayoutOrder = 1
+
+--//========================================================
+--// DROPDOWN CREATOR
+--//========================================================
+
+local function createSelector(
+    labelText,
+    initialValue,
+    getOptions,
+    onSelected
+)
+
+    local Container = Instance.new("Frame")
+    Container.Size = UDim2.new(1, 0, 0, 48)
+    Container.BackgroundColor3 = DarkerBackground
+    Container.BorderSizePixel = 0
+    Container.Parent = FarmingPage
+
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 7)
+    Corner.Parent = Container
+
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = ThemeColor
+    Stroke.Transparency = 0.7
+    Stroke.Parent = Container
+
+    local Label = Instance.new("TextLabel")
+    Label.BackgroundTransparency = 1
+    Label.Position = UDim2.new(0, 12, 0, 0)
+    Label.Size = UDim2.new(0, 75, 1, 0)
+    Label.Text = labelText
+    Label.Font = Enum.Font.GothamMedium
+    Label.TextSize = 12
+    Label.TextColor3 = TextColor
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Container
+
+    local Button = Instance.new("TextButton")
+    Button.Position = UDim2.new(0, 85, 0, 7)
+    Button.Size = UDim2.new(1, -95, 0, 34)
+    Button.BackgroundColor3 = ButtonBackground
+    Button.BorderSizePixel = 0
+    Button.Text = ""
+    Button.AutoButtonColor = false
+    Button.Parent = Container
+
+    local ButtonCorner = Instance.new("UICorner")
+    ButtonCorner.CornerRadius = UDim.new(0, 6)
+    ButtonCorner.Parent = Button
+
+    local Value = Instance.new("TextLabel")
+    Value.BackgroundTransparency = 1
+    Value.Position = UDim2.new(0, 10, 0, 0)
+    Value.Size = UDim2.new(1, -38, 1, 0)
+    Value.Text = initialValue
+    Value.Font = Enum.Font.Gotham
+    Value.TextSize = 11
+    Value.TextColor3 = TextColor
+    Value.TextXAlignment = Enum.TextXAlignment.Left
+    Value.TextTruncate = Enum.TextTruncate.AtEnd
+    Value.Parent = Button
+
+    local Arrow = Instance.new("TextLabel")
+    Arrow.BackgroundTransparency = 1
+    Arrow.AnchorPoint = Vector2.new(1, 0.5)
+    Arrow.Position = UDim2.new(1, -8, 0.5, 0)
+    Arrow.Size = UDim2.new(0, 18, 0, 18)
+    Arrow.Text = "▼"
+    Arrow.Font = Enum.Font.GothamBold
+    Arrow.TextSize = 9
+    Arrow.TextColor3 = MutedText
+    Arrow.Parent = Button
+
+    local Selector = {
+        Container = Container,
+        Button = Button,
+        Value = Value
+    }
+
+    Button.MouseButton1Click:Connect(function()
+
+        if ActiveDropdownButton == Button then
+            closeDropdown()
+            return
+        end
+
+        closeDropdown()
+
+        local options = getOptions()
+
+        if not options or #options == 0 then
+            return
+        end
+
+        local buttonPosition = Button.AbsolutePosition
+        local buttonSize = Button.AbsoluteSize
+
+        local rowHeight = 32
+        local padding = 8
+        local maxHeight = 220
+
+        local dropdownHeight =
+            math.min(
+                (#options * rowHeight) + padding,
+                maxHeight
+            )
+
+        local viewport =
+            workspace.CurrentCamera
+            and workspace.CurrentCamera.ViewportSize
+            or Vector2.new(1920, 1080)
+
+        local x = buttonPosition.X
+        local y =
+            buttonPosition.Y
+            + buttonSize.Y
+            + 4
+
+        if x + buttonSize.X > viewport.X - 5 then
+            x = viewport.X - buttonSize.X - 5
+        end
+
+        if y + dropdownHeight > viewport.Y - 5 then
+
+            y =
+                buttonPosition.Y
+                - dropdownHeight
+                - 4
+
+        end
+
+        local Dropdown = Instance.new("Frame")
+        Dropdown.Name = "ActiveDropdown"
+        Dropdown.Position = UDim2.fromOffset(x, y)
+        Dropdown.Size =
+            UDim2.fromOffset(
+                buttonSize.X,
+                dropdownHeight
+            )
+        Dropdown.BackgroundColor3 =
+            Color3.fromRGB(20, 20, 23)
+        Dropdown.BorderSizePixel = 0
+        Dropdown.ZIndex = 210
+        Dropdown.Parent = DropdownOverlay
+
+        local DropCorner = Instance.new("UICorner")
+        DropCorner.CornerRadius = UDim.new(0, 7)
+        DropCorner.Parent = Dropdown
+
+        local DropStroke = Instance.new("UIStroke")
+        DropStroke.Color = ThemeColor
+        DropStroke.Thickness = 1.5
+        DropStroke.Transparency = 0.15
+        DropStroke.Parent = Dropdown
+
+        local List = Instance.new("ScrollingFrame")
+        List.Position = UDim2.fromOffset(4, 4)
+        List.Size = UDim2.new(1, -8, 1, -8)
+        List.BackgroundTransparency = 1
+        List.BorderSizePixel = 0
+        List.ScrollBarThickness = 3
+        List.ScrollBarImageColor3 = ThemeColor
+        List.CanvasSize = UDim2.new(0, 0, 0, 0)
+        List.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        List.ZIndex = 211
+        List.Parent = Dropdown
+
+        local ListLayout = Instance.new("UIListLayout")
+        ListLayout.Padding = UDim.new(0, 3)
+        ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        ListLayout.Parent = List
+
+        for index, option in ipairs(options) do
+
+            local OptionButton = Instance.new("TextButton")
+            OptionButton.Size =
+                UDim2.new(1, 0, 0, rowHeight)
+
+            OptionButton.BackgroundColor3 =
+                Color3.fromRGB(32, 32, 36)
+
+            OptionButton.BorderSizePixel = 0
+            OptionButton.Text = option
+            OptionButton.Font = Enum.Font.Gotham
+            OptionButton.TextSize = 11
+            OptionButton.TextColor3 = TextColor
+            OptionButton.TextXAlignment = Enum.TextXAlignment.Left
+            OptionButton.AutoButtonColor = false
+            OptionButton.LayoutOrder = index
+            OptionButton.ZIndex = 212
+            OptionButton.Parent = List
+
+            addPadding(
+                OptionButton,
+                9,
+                5,
+                0,
+                0
+            )
+
+            local OptionCorner =
+                Instance.new("UICorner")
+
+            OptionCorner.CornerRadius =
+                UDim.new(0, 5)
+
+            OptionCorner.Parent =
+                OptionButton
+
+            OptionButton.MouseEnter:Connect(
+                function()
+                    OptionButton.BackgroundColor3 =
+                        ThemeColor
+                end
+            )
+
+            OptionButton.MouseLeave:Connect(
+                function()
+                    OptionButton.BackgroundColor3 =
+                        Color3.fromRGB(32, 32, 36)
+                end
+            )
+
+            OptionButton.MouseButton1Click:Connect(
+                function()
+
+                    Value.Text = option
+
+                    closeDropdown()
+
+                    onSelected(option)
+
+                end
+            )
+        end
+
+        ActiveDropdown = Dropdown
+        ActiveDropdownButton = Button
+        DropdownOverlay.Visible = true
+
+    end)
+
+    return Selector
+end
+
+--//========================================================
+--// AREA DROPDOWN
+--//========================================================
+
+local AreaSelector
+local FarmSelector
+
+AreaSelector =
+    createSelector(
+        "AREA",
+        SelectedArea,
+
+        function()
+            return AreaOrder
+        end,
+
+        function(area)
+
+            SelectedArea = area
+
+            local farms =
+                AuctionAreas[SelectedArea]
+
+            if farms and farms[1] then
+                SelectedFarm = farms[1]
+            end
+
+            if FarmSelector then
+                FarmSelector.Value.Text = SelectedFarm
+            end
+
+            FarmingSubText.Text =
+                SelectedArea
+                .. " • "
+                .. SelectedFarm
+
+        end
+    )
+
+AreaSelector.Container.LayoutOrder = 2
+
+--//========================================================
+--// FARM DROPDOWN
+--//========================================================
+
+FarmSelector =
+    createSelector(
+        "AUCTION",
+        SelectedFarm,
+
+        function()
+            return AuctionAreas[SelectedArea]
+        end,
+
+        function(farm)
+
+            SelectedFarm = farm
+
+            FarmingSubText.Text =
+                SelectedArea
+                .. " • "
+                .. SelectedFarm
+
+        end
+    )
+
+FarmSelector.Container.LayoutOrder = 3
+
+--//========================================================
+--// FARMING HELPERS
+--//========================================================
+
+local function GetSelectedGarage()
+
+    local Debris =
+        workspace:FindFirstChild("_Debris")
+
+    if not Debris then
+        return nil
+    end
+
+    local Garages =
+        Debris:FindFirstChild("Garages")
+
+    if not Garages then
+        return nil
+    end
+
+    local garage =
+        Garages:FindFirstChild(
+            SelectedFarm
+        )
+
+    if garage then
+        return garage
+    end
+
+    -- fallback: only search inside selected area
+    local areaFolder =
+        workspace:FindFirstChild("Areas")
+        and workspace.Areas:FindFirstChild(
+            SelectedArea
+        )
+
+    if areaFolder then
+
+        garage =
+            areaFolder:FindFirstChild(
+                SelectedFarm,
+                true
+            )
+
+        if garage then
+            return garage
+        end
+    end
+
+    return nil
+end
+
+--//========================================================
+--// TELEPORT TO SELECTED FARM
+--//========================================================
+
+local function TeleportToFarm()
+
+    local garage = GetSelectedGarage()
+
+    if not garage then
+        Notify(
+            "Farming",
+            "Could not find " .. SelectedFarm,
+            3
+        )
+        return
+    end
+
+    local Entry =
+        garage:FindFirstChild(
+            "EntrySquare",
+            true
+        )
+
+    local Target
+
+    if Entry then
+
+        Target =
+            Entry:FindFirstChild(
+                "PromptPart",
+                true
+            )
+
+        if not Target then
+            Target =
+                Entry:FindFirstChildWhichIsA(
+                    "BasePart",
+                    true
+                )
+        end
+    end
+
+    if not Target then
+        Target =
+            garage:FindFirstChildWhichIsA(
+                "BasePart",
+                true
+            )
+    end
+
+    if not Target then
+        Notify(
+            "Farming",
+            "No teleport position found",
+            3
+        )
+        return
+    end
+
+    local Character =
+        LocalPlayer.Character
+
+    local HRP =
+        Character
+        and Character:FindFirstChild(
+            "HumanoidRootPart"
+        )
+
+    if not HRP then
+        return
+    end
+
+    HRP.CFrame =
+        Target.CFrame
+        + Vector3.new(0, 3, 0)
+
+    Notify(
+        "Farming",
+        "Teleported to " .. SelectedFarm,
+        2
+    )
+end
+
+--//========================================================
+--// ENTER SELECTED AUCTION
+--//========================================================
+
+local function EnterSelectedAuction()
+
+    local garage = GetSelectedGarage()
+
+    if not garage then
+        Notify(
+            "Farming",
+            "Could not find " .. SelectedFarm,
+            3
+        )
+        return
+    end
+
+    local prompt =
+        garage:FindFirstChild(
+            "EnterAuction",
+            true
+        )
+
+    if not prompt
+        or not prompt:IsA("ProximityPrompt") then
+
+        Notify(
+            "Farming",
+            "EnterAuction prompt not found",
+            3
+        )
+
+        return
+    end
+
+    pcall(function()
+        prompt.HoldDuration = 0
+    end)
+
+    if fireproximityprompt then
+
+        fireproximityprompt(prompt)
+
+        Notify(
+            "Farming",
+            "Entered " .. SelectedFarm,
+            2
+        )
+
+    else
+
+        Notify(
+            "Farming",
+            "Prompt found, but executor cannot fire it",
+            3
+        )
+
+    end
+end
+
+--//========================================================
+--// BID ONCE
+--//========================================================
+
+local function BidOnce()
+
+    if not BidEvent then
+        Notify(
+            "Farming",
+            "Bid remote not found",
+            3
+        )
+        return
+    end
+
+    local PlayerGui =
+        LocalPlayer:FindFirstChild(
+            "PlayerGui"
+        )
+
+    local UI =
+        PlayerGui
+        and PlayerGui:FindFirstChild(
+            "UIControllerGui"
+        )
+
+    local Container =
+        UI
+        and UI:FindFirstChild(
+            "AuctionBiddingContainer"
+        )
+
+    local BidButton =
+        Container
+        and Container:FindFirstChild(
+            "BidButton"
+        )
+
+    if BidButton
+        and BidButton.Visible
+        and BidButton.Active then
+
+        BidEvent:FireServer()
+
+        Notify(
+            "Farming",
+            "Bid placed",
+            2
+        )
+
+        return
+    end
+
+    Notify(
+        "Farming",
+        "Bid button isn't available",
+        2
+    )
+end
+
+--//========================================================
+--// AUCTION PAUSE / RESUME
+--//========================================================
+
+local RequestAuctionPause
+
+pcall(function()
+
+    RequestAuctionPause =
+        ReplicatedStorage
+            :WaitForChild("Events")
+            :WaitForChild("Auction")
+            :WaitForChild("RequestAuctionPause")
+
+end)
+
+local function PauseAuction()
+
+    if not RequestAuctionPause then
+        Notify(
+            "Farming",
+            "Auction pause remote not found",
+            3
+        )
+        return
+    end
+
+    RequestAuctionPause:FireServer(true)
+
+    Notify(
+        "Farming",
+        "Auction paused",
+        2
+    )
+end
+
+local function ResumeAuction()
+
+    if not RequestAuctionPause then
+        Notify(
+            "Farming",
+            "Auction pause remote not found",
+            3
+        )
+        return
+    end
+
+    RequestAuctionPause:FireServer(false)
+
+    Notify(
+        "Farming",
+        "Auction resumed",
+        2
+    )
+end
+
+--//========================================================
+--// BID + PAUSE
+--//========================================================
+
+local function BidAndPause()
+
+    BidOnce()
+
+    task.wait(0.15)
+
+    PauseAuction()
+end
+
+--//========================================================
+--// FARMING BUTTONS
+--//========================================================
+
+createActionButton(
+    "Teleport to Selected Farm",
+    function()
+        TeleportToFarm()
+    end,
+    FarmingPage
+).LayoutOrder = 4
+
+createActionButton(
+    "Enter Selected Auction",
+    function()
+        EnterSelectedAuction()
+    end,
+    FarmingPage
+).LayoutOrder = 5
+
+createActionButton(
+    "Bid Once",
+    function()
+        BidOnce()
+    end,
+    FarmingPage
+).LayoutOrder = 6
+
+createActionButton(
+    "Pause Auction",
+    function()
+        PauseAuction()
+    end,
+    FarmingPage
+).LayoutOrder = 7
+
+createActionButton(
+    "Resume Auction",
+    function()
+        ResumeAuction()
+    end,
+    FarmingPage
+).LayoutOrder = 8
+
+createActionButton(
+    "Bid + Pause",
+    function()
+        BidAndPause()
+    end,
+    FarmingPage
+).LayoutOrder = 9
+
+--//========================================================
+--// TAB SWITCHING
+--//========================================================
+
+local function ShowMain()
+
+    closeDropdown()
+
+    CurrentTab = "Main"
+
+    MainPage.Visible = true
+    FarmingPage.Visible = false
+
+    MainTab.BackgroundColor3 = ThemeColor
+    MainTab.TextColor3 = TextColor
+
+    FarmingTab.BackgroundColor3 = ButtonBackground
+    FarmingTab.TextColor3 = MutedText
+end
+
+local function ShowFarming()
+
+    closeDropdown()
+
+    CurrentTab = "Farming"
+
+    MainPage.Visible = false
+    FarmingPage.Visible = true
+
+    MainTab.BackgroundColor3 = ButtonBackground
+    MainTab.TextColor3 = MutedText
+
+    FarmingTab.BackgroundColor3 = ThemeColor
+    FarmingTab.TextColor3 = TextColor
+end
+
+MainTab.MouseButton1Click:Connect(ShowMain)
+FarmingTab.MouseButton1Click:Connect(ShowFarming)
+
+--//========================================================
+--// CLOSE DROPDOWN WHEN SCROLLING
+--//========================================================
+
+Scroll:GetPropertyChangedSignal("CanvasPosition"):Connect(
+    function()
+        if ActiveDropdown then
+            closeDropdown()
+        end
+    end
+)
+
+--//========================================================
+--// DRAGGING
+--//========================================================
+
+local dragging = false
+local dragStart
+local startPosition
+
+TitleBar.InputBegan:Connect(function(input)
+
+    if input.UserInputType ==
+        Enum.UserInputType.MouseButton1 then
+
+        closeDropdown()
+
+        dragging = true
+        dragStart = input.Position
+        startPosition = Main.Position
+    end
+end)
+
+TitleBar.InputEnded:Connect(function(input)
+
+    if input.UserInputType ==
+        Enum.UserInputType.MouseButton1 then
+
+        dragging = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+
+    if dragging
+        and input.UserInputType ==
+            Enum.UserInputType.MouseMovement then
+
+        local delta =
+            input.Position - dragStart
+
+        Main.Position =
+            UDim2.new(
+                startPosition.X.Scale,
+                startPosition.X.Offset + delta.X,
+
+                startPosition.Y.Scale,
+                startPosition.Y.Offset + delta.Y
+            )
+    end
+end)
+
+--//========================================================
+--// RESIZE HANDLE
+--//========================================================
+
+local ResizeHandle = Instance.new("TextButton")
+ResizeHandle.Size = UDim2.new(0, 20, 0, 20)
+ResizeHandle.Position = UDim2.new(1, -20, 1, -20)
+ResizeHandle.BackgroundTransparency = 1
+ResizeHandle.Text = "◢"
+ResizeHandle.TextSize = 12
+ResizeHandle.TextColor3 = ThemeColor
+ResizeHandle.AutoButtonColor = false
+ResizeHandle.ZIndex = 50
+ResizeHandle.Parent = Main
+
+local resizing = false
+local resizeStart
+local resizeSize
+
+ResizeHandle.InputBegan:Connect(function(input)
+
+    if input.UserInputType ==
+        Enum.UserInputType.MouseButton1 then
+
+        closeDropdown()
+
+        resizing = true
+        resizeStart = input.Position
+        resizeSize = Main.AbsoluteSize
+    end
+end)
+
+ResizeHandle.InputEnded:Connect(function(input)
+
+    if input.UserInputType ==
+        Enum.UserInputType.MouseButton1 then
+
+        resizing = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+
+    if resizing
+        and input.UserInputType ==
+            Enum.UserInputType.MouseMovement then
+
+        local delta =
+            input.Position - resizeStart
+
+        local newWidth =
+            math.clamp(
+                resizeSize.X + delta.X,
+                MIN_WIDTH,
+                MAX_WIDTH
+            )
+
+        local newHeight =
+            math.clamp(
+                resizeSize.Y + delta.Y,
+                MIN_HEIGHT,
+                MAX_HEIGHT
+            )
+
+        Main.Size =
+            UDim2.fromOffset(
+                newWidth,
+                newHeight
+            )
+    end
+end)
+
+--//========================================================
+--// THEME PICKER
+--//========================================================
+
+local ThemePicker = Instance.new("Frame")
+ThemePicker.Name = "ThemePicker"
+ThemePicker.Size = UDim2.new(0, 280, 0, 310)
+ThemePicker.Position = UDim2.new(0.5, -140, 0.5, -155)
+ThemePicker.BackgroundColor3 = DarkBackground
+ThemePicker.BorderSizePixel = 0
+ThemePicker.Visible = false
+ThemePicker.ZIndex = 300
+ThemePicker.Parent = ScreenGui
+
+local PickerCorner = Instance.new("UICorner")
+PickerCorner.CornerRadius = UDim.new(0, 10)
+PickerCorner.Parent = ThemePicker
+
+local PickerStroke = Instance.new("UIStroke")
+PickerStroke.Color = ThemeColor
+PickerStroke.Thickness = 1.5
+PickerStroke.Parent = ThemePicker
+
+local PickerTitle = Instance.new("TextLabel")
+PickerTitle.BackgroundTransparency = 1
+PickerTitle.Position = UDim2.new(0, 12, 0, 8)
+PickerTitle.Size = UDim2.new(1, -45, 0, 25)
+PickerTitle.Text = "THEME COLOR"
+PickerTitle.Font = Enum.Font.GothamBold
+PickerTitle.TextSize = 13
+PickerTitle.TextColor3 = TextColor
+PickerTitle.TextXAlignment = Enum.TextXAlignment.Left
+PickerTitle.ZIndex = 301
+PickerTitle.Parent = ThemePicker
+
+local PickerClose = Instance.new("TextButton")
+PickerClose.BackgroundTransparency = 1
+PickerClose.Position = UDim2.new(1, -35, 0, 5)
+PickerClose.Size = UDim2.new(0, 28, 0, 28)
+PickerClose.Text = "×"
+PickerClose.Font = Enum.Font.GothamBold
+PickerClose.TextSize = 20
+PickerClose.TextColor3 = TextColor
+PickerClose.ZIndex = 301
+PickerClose.Parent = ThemePicker
+
+local Preview = Instance.new("Frame")
+Preview.Position = UDim2.new(0, 15, 0, 48)
+Preview.Size = UDim2.new(1, -30, 0, 42)
+Preview.BackgroundColor3 = ThemeColor
+Preview.BorderSizePixel = 0
+Preview.ZIndex = 301
+Preview.Parent = ThemePicker
+
+local PreviewCorner = Instance.new("UICorner")
+PreviewCorner.CornerRadius = UDim.new(0, 7)
+PreviewCorner.Parent = Preview
+
+local RSlider = Instance.new("TextBox")
+RSlider.Position = UDim2.new(0, 15, 0, 105)
+RSlider.Size = UDim2.new(1, -30, 0, 35)
+RSlider.BackgroundColor3 = ButtonBackground
+RSlider.BorderSizePixel = 0
+RSlider.Text = tostring(math.floor(ThemeColor.R * 255))
+RSlider.PlaceholderText = "Red 0-255"
+RSlider.TextColor3 = TextColor
+RSlider.Font = Enum.Font.Gotham
+RSlider.TextSize = 11
+RSlider.ZIndex = 301
+RSlider.Parent = ThemePicker
+
+local GSlider = RSlider:Clone()
+GSlider.Position = UDim2.new(0, 15, 0, 148)
+GSlider.Text = tostring(math.floor(ThemeColor.G * 255))
+GSlider.PlaceholderText = "Green 0-255"
+GSlider.Parent = ThemePicker
+
+local BSlider = RSlider:Clone()
+BSlider.Position = UDim2.new(0, 15, 0, 191)
+BSlider.Text = tostring(math.floor(ThemeColor.B * 255))
+BSlider.PlaceholderText = "Blue 0-255"
+BSlider.Parent = ThemePicker
+
+local ApplyTheme = Instance.new("TextButton")
+ApplyTheme.Position = UDim2.new(0, 15, 1, -55)
+ApplyTheme.Size = UDim2.new(1, -30, 0, 40)
+ApplyTheme.BackgroundColor3 = ThemeColor
+ApplyTheme.BorderSizePixel = 0
+ApplyTheme.Text = "APPLY"
+ApplyTheme.Font = Enum.Font.GothamBold
+ApplyTheme.TextSize = 12
+ApplyTheme.TextColor3 = TextColor
+ApplyTheme.AutoButtonColor = false
+ApplyTheme.ZIndex = 301
+ApplyTheme.Parent = ThemePicker
+
+local ApplyCorner = Instance.new("UICorner")
+ApplyCorner.CornerRadius = UDim.new(0, 7)
+ApplyCorner.Parent = ApplyTheme
+
+local function setTheme(color)
+
+    ThemeColor = color
+
+    MainStroke.Color = ThemeColor
+    TitleBar.BackgroundColor3 = ThemeColor
+    TitleCover.BackgroundColor3 = ThemeColor
+    Scroll.ScrollBarImageColor3 = ThemeColor
+    ResizeHandle.TextColor3 = ThemeColor
+
+    MainTab.BackgroundColor3 =
+        CurrentTab == "Main"
+        and ThemeColor
+        or ButtonBackground
+
+    FarmingTab.BackgroundColor3 =
+        CurrentTab == "Farming"
+        and ThemeColor
+        or ButtonBackground
+
+    PickerStroke.Color = ThemeColor
+    Preview.BackgroundColor3 = ThemeColor
+    ApplyTheme.BackgroundColor3 = ThemeColor
+
+    for _, object in ipairs(ToggleObjects) do
+        -- handled below
+    end
+
+    for _, obj in ipairs(ScreenGui:GetDescendants()) do
+
+        if obj:IsA("UIStroke") then
+
+            if obj ~= MainStroke
+                and obj ~= PickerStroke then
+
+                obj.Color = ThemeColor
+            end
+
+        end
+
+        if obj:IsA("TextButton") then
+
+            if obj.Text == "ON" then
+                obj.BackgroundColor3 = ThemeColor
+            end
+
+        end
+    end
+end
+
+ApplyTheme.MouseButton1Click:Connect(function()
+
+    local r =
+        math.clamp(
+            tonumber(RSlider.Text) or 125,
+            0,
+            255
+        )
+
+    local g =
+        math.clamp(
+            tonumber(GSlider.Text) or 25,
+            0,
+            255
+        )
+
+    local b =
+        math.clamp(
+            tonumber(BSlider.Text) or 25,
+            0,
+            255
+        )
+
+    setTheme(
+        Color3.fromRGB(
+            r,
+            g,
+            b
+        )
+    )
+
+    ThemePicker.Visible = false
+end)
+
+ThemeButton.MouseButton1Click:Connect(function()
+
+    closeDropdown()
+
+    ThemePicker.Visible =
+        not ThemePicker.Visible
+end)
+
+PickerClose.MouseButton1Click:Connect(function()
+    ThemePicker.Visible = false
+end)
+
+--//========================================================
+--// CLOSE
+--//========================================================
+
+CloseButton.MouseButton1Click:Connect(function()
+
+    for _, connection in ipairs(AuctionPromptConnections) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+
+    closeDropdown()
+
+    ScreenGui:Destroy()
+end)
+
+--//========================================================
+--// SHOW / HIDE MENU
+--//========================================================
+
+UserInputService.InputBegan:Connect(function(input, processed)
+
+    if processed then
+        return
+    end
+
+    if input.KeyCode == Enum.KeyCode.Comma then
+
+        MenuVisible = not MenuVisible
+
+        Main.Visible = MenuVisible
+
+        if not MenuVisible then
+            closeDropdown()
+            ThemePicker.Visible = false
+        end
+    end
+end)
+
+--//========================================================
+--// INITIAL TAB
+--//========================================================
+
+ShowMain()
+
+--//========================================================
+--// LOADED
+--//========================================================
+
+Notify(
+    "Storage Hunters Hub",
+    "Loaded successfully",
+    3
+)
+
+print("========================================")
+print(" STORAGE HUNTERS HUB LOADED")
+print(" Farming tab ready")
+print(" Comma = Show / Hide")
+print("========================================")
