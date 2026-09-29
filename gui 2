@@ -1,0 +1,2736 @@
+--// STORAGE HUNTERS HUB
+--// AUCTION FARMING / AUTO BID / INSTANT UNLOAD
+--// P = Auto Bid toggle
+--// COMMA = Show / Hide Hub
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+--// SERVICES
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+
+--// REMOVE OLD GUI
+pcall(function()
+    local old = CoreGui:FindFirstChild("StorageHuntersHub")
+    if old then
+        old:Destroy()
+    end
+end)
+
+--// SETTINGS
+local MIN_WIDTH = 300
+local MIN_HEIGHT = 260
+local MAX_WIDTH = 700
+local MAX_HEIGHT = 750
+
+local ThemeColor = Color3.fromRGB(125, 25, 25)
+local DarkBackground = Color3.fromRGB(25, 25, 28)
+local DarkerBackground = Color3.fromRGB(18, 18, 21)
+local ButtonBackground = Color3.fromRGB(35, 35, 39)
+local OffColor = Color3.fromRGB(55, 55, 60)
+local TextColor = Color3.fromRGB(240, 240, 240)
+local MutedText = Color3.fromRGB(160, 160, 165)
+
+--// STATE
+local Features = {}
+
+local FarmingBusy = false
+local FarmingRunId = 0
+
+local SelectedArea = "The Mines"
+local SelectedFarm = "Mine Bunker"
+
+local CurrentFarmIndex = 1
+
+--// AUCTION DATA
+local AuctionAreas = {
+    ["The Mines"] = {
+        "Mine Bunker",
+        "Ore Hopper Depot",
+        "Prospector's Shack",
+        "Twin Drill Rig"
+    },
+
+    ["Back Alley"] = {
+        "Camo Shop Front",
+        "Shop Front"
+    },
+
+    ["Business Bay"] = {
+        "High End Apartment",
+        "Luxury Hotel",
+        "The Pointer"
+    },
+
+    ["Farmyard"] = {
+        "Stable Garage",
+        "Barn Garage"
+    },
+
+    ["Junk Yard"] = {
+        "Scrap Garage 2",
+        "Scrap Garage 3"
+    },
+
+    ["Lucky Beach"] = {
+        "Beach Hut Garage",
+        "Surf Shack Garage",
+        "Boat House Garage"
+    },
+
+    ["Power Plant"] = {
+        "Power Plant Tier 1 Garage",
+        "Power Plant Tier 2 Garage",
+        "Power Plant Tier 3 Garage",
+        "Power Plant Tier 4 Garage"
+    },
+
+    ["Shipyard"] = {
+        "Small Container Garage",
+        "Warehouse Garage",
+        "Large Container Garage"
+    }
+}
+
+local AreaOrder = {
+    "The Mines",
+    "Back Alley",
+    "Business Bay",
+    "Farmyard",
+    "Junk Yard",
+    "Lucky Beach",
+    "Power Plant",
+    "Shipyard"
+}
+
+--// NOTIFICATION
+local function Notify(title, text, duration)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title,
+            Text = text,
+            Duration = duration or 3
+        })
+    end)
+end
+
+--// GUI
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "StorageHuntersHub"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+ScreenGui.Parent = CoreGui
+
+local Main = Instance.new("Frame")
+Main.Name = "Main"
+Main.Size = UDim2.new(0, 380, 0, 430)
+Main.Position = UDim2.new(0.5, -190, 0.5, -215)
+Main.BackgroundColor3 = DarkBackground
+Main.BorderSizePixel = 0
+Main.Active = true
+Main.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 10)
+MainCorner.Parent = Main
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = ThemeColor
+MainStroke.Thickness = 1.5
+MainStroke.Parent = Main
+
+--// TITLE BAR
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 42)
+TitleBar.BackgroundColor3 = DarkerBackground
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = Main
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 10)
+TitleCorner.Parent = TitleBar
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -105, 1, 0)
+Title.Position = UDim2.new(0, 14, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "STORAGE HUNTERS HUB"
+Title.TextColor3 = TextColor
+Title.TextSize = 15
+Title.Font = Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = TitleBar
+
+--// THEME BUTTON
+local ThemeButton = Instance.new("TextButton")
+ThemeButton.Size = UDim2.new(0, 30, 0, 28)
+ThemeButton.Position = UDim2.new(1, -68, 0, 7)
+ThemeButton.BackgroundColor3 = ThemeColor
+ThemeButton.Text = "●"
+ThemeButton.TextColor3 = Color3.new(1, 1, 1)
+ThemeButton.TextSize = 16
+ThemeButton.Font = Enum.Font.GothamBold
+ThemeButton.AutoButtonColor = false
+ThemeButton.Parent = TitleBar
+
+local ThemeCorner = Instance.new("UICorner")
+ThemeCorner.CornerRadius = UDim.new(0, 7)
+ThemeCorner.Parent = ThemeButton
+
+--// CLOSE
+local CloseButton = Instance.new("TextButton")
+CloseButton.Size = UDim2.new(0, 30, 0, 28)
+CloseButton.Position = UDim2.new(1, -34, 0, 7)
+CloseButton.BackgroundColor3 = Color3.fromRGB(80, 35, 35)
+CloseButton.Text = "X"
+CloseButton.TextColor3 = TextColor
+CloseButton.TextSize = 14
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.AutoButtonColor = false
+CloseButton.Parent = TitleBar
+
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 7)
+CloseCorner.Parent = CloseButton
+
+CloseButton.MouseButton1Click:Connect(function()
+    Main.Visible = false
+end)
+
+--// DRAGGING
+do
+    local dragging = false
+    local dragStart
+    local startPos
+
+    TitleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = Main.Position
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+
+            Main.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+--// TAB BAR
+local TabBar = Instance.new("Frame")
+TabBar.Size = UDim2.new(1, -20, 0, 36)
+TabBar.Position = UDim2.new(0, 10, 0, 50)
+TabBar.BackgroundTransparency = 1
+TabBar.Parent = Main
+
+local MainTab = Instance.new("TextButton")
+MainTab.Size = UDim2.new(0.5, -4, 1, 0)
+MainTab.Position = UDim2.new(0, 0, 0, 0)
+MainTab.BackgroundColor3 = ButtonBackground
+MainTab.Text = "MAIN"
+MainTab.TextColor3 = MutedText
+MainTab.TextSize = 13
+MainTab.Font = Enum.Font.GothamBold
+MainTab.AutoButtonColor = false
+MainTab.Parent = TabBar
+
+local MainTabCorner = Instance.new("UICorner")
+MainTabCorner.CornerRadius = UDim.new(0, 7)
+MainTabCorner.Parent = MainTab
+
+local FarmingTab = Instance.new("TextButton")
+FarmingTab.Size = UDim2.new(0.5, -4, 1, 0)
+FarmingTab.Position = UDim2.new(0.5, 4, 0, 0)
+FarmingTab.BackgroundColor3 = ThemeColor
+FarmingTab.Text = "FARMING"
+FarmingTab.TextColor3 = TextColor
+FarmingTab.TextSize = 13
+FarmingTab.Font = Enum.Font.GothamBold
+FarmingTab.AutoButtonColor = false
+FarmingTab.Parent = TabBar
+
+local FarmingTabCorner = Instance.new("UICorner")
+FarmingTabCorner.CornerRadius = UDim.new(0, 7)
+FarmingTabCorner.Parent = FarmingTab
+
+--// PAGE HOLDER
+local PageHolder = Instance.new("Frame")
+PageHolder.Size = UDim2.new(1, -20, 1, -96)
+PageHolder.Position = UDim2.new(0, 10, 0, 92)
+PageHolder.BackgroundTransparency = 1
+PageHolder.ClipsDescendants = true
+PageHolder.Parent = Main
+
+local function createPage()
+    local page = Instance.new("ScrollingFrame")
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.BorderSizePixel = 0
+    page.ScrollBarThickness = 5
+    page.ScrollBarImageColor3 = ThemeColor
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.ScrollingDirection = Enum.ScrollingDirection.Y
+    page.Visible = false
+    page.Parent = PageHolder
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 8)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = page
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingBottom = UDim.new(0, 10)
+    padding.PaddingTop = UDim.new(0, 5)
+    padding.PaddingLeft = UDim.new(0, 2)
+    padding.PaddingRight = UDim.new(0, 2)
+    padding.Parent = page
+
+    return page
+end
+
+local MainPage = createPage()
+local FarmingPage = createPage()
+
+MainPage.Visible = false
+FarmingPage.Visible = true
+
+--// DROPDOWN OVERLAY
+local DropdownOverlay = Instance.new("Frame")
+DropdownOverlay.Name = "DropdownOverlay"
+DropdownOverlay.Size = UDim2.new(1, 0, 1, 0)
+DropdownOverlay.Position = UDim2.new(0, 0, 0, 0)
+DropdownOverlay.BackgroundTransparency = 1
+DropdownOverlay.ZIndex = 200
+DropdownOverlay.Parent = ScreenGui
+
+local CurrentDropdown = nil
+
+local function CloseDropdown()
+    if CurrentDropdown then
+        CurrentDropdown:Destroy()
+        CurrentDropdown = nil
+    end
+end
+
+--// SECTION TITLE
+local function createSectionTitle(text, page, order)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -4, 0, 25)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = TextColor
+    label.TextSize = 14
+    label.Font = Enum.Font.GothamBold
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.LayoutOrder = order or 1
+    label.Parent = page
+
+    return label
+end
+
+--// TOGGLE
+local function createToggleBar(name, callback, page, order)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -4, 0, 48)
+    container.BackgroundColor3 = ButtonBackground
+    container.BorderSizePixel = 0
+    container.LayoutOrder = order or 2
+    container.Parent = page
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = container
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -75, 1, 0)
+    label.Position = UDim2.new(0, 14, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextColor3 = TextColor
+    label.TextSize = 13
+    label.Font = Enum.Font.GothamSemibold
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = container
+
+    local toggle = Instance.new("TextButton")
+    toggle.Size = UDim2.new(0, 52, 0, 26)
+    toggle.Position = UDim2.new(1, -64, 0.5, -13)
+    toggle.BackgroundColor3 = OffColor
+    toggle.Text = "OFF"
+    toggle.TextColor3 = TextColor
+    toggle.TextSize = 10
+    toggle.Font = Enum.Font.GothamBold
+    toggle.AutoButtonColor = false
+    toggle.Parent = container
+
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(1, 0)
+    toggleCorner.Parent = toggle
+
+    local state = false
+
+    local function setState(newState, runCallback)
+        state = newState
+        Features[name] = state
+
+        if state then
+            toggle.BackgroundColor3 = ThemeColor
+            toggle.Text = "ON"
+        else
+            toggle.BackgroundColor3 = OffColor
+            toggle.Text = "OFF"
+        end
+
+        if runCallback then
+            pcall(function()
+                callback(state)
+            end)
+        end
+    end
+
+    toggle.MouseButton1Click:Connect(function()
+        setState(not state, true)
+    end)
+
+    setState(false, false)
+
+    return container, toggle, function(newState)
+        setState(newState, true)
+    end
+end
+
+--// SELECTOR
+local function createSelector(labelText, initialValue, getOptions, onSelected, page, order)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -4, 0, 64)
+    container.BackgroundColor3 = ButtonBackground
+    container.BorderSizePixel = 0
+    container.LayoutOrder = order or 3
+    container.Parent = page
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = container
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -20, 0, 20)
+    label.Position = UDim2.new(0, 12, 0, 7)
+    label.BackgroundTransparency = 1
+    label.Text = labelText
+    label.TextColor3 = MutedText
+    label.TextSize = 10
+    label.Font = Enum.Font.GothamSemibold
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = container
+
+    local selector = Instance.new("TextButton")
+    selector.Size = UDim2.new(1, -20, 0, 30)
+    selector.Position = UDim2.new(0, 10, 0, 29)
+    selector.BackgroundColor3 = DarkerBackground
+    selector.Text = initialValue
+    selector.TextColor3 = TextColor
+    selector.TextSize = 11
+    selector.Font = Enum.Font.GothamSemibold
+    selector.TextXAlignment = Enum.TextXAlignment.Left
+    selector.AutoButtonColor = false
+    selector.ZIndex = 201
+    selector.Parent = container
+
+    local selectorPadding = Instance.new("UIPadding")
+    selectorPadding.PaddingLeft = UDim.new(0, 10)
+    selectorPadding.Parent = selector
+
+    local selectorCorner = Instance.new("UICorner")
+    selectorCorner.CornerRadius = UDim.new(0, 6)
+    selectorCorner.Parent = selector
+
+    selector.MouseButton1Click:Connect(function()
+        CloseDropdown()
+
+        local options = getOptions()
+
+        if not options or #options == 0 then
+            return
+        end
+
+        local dropdown = Instance.new("Frame")
+        dropdown.Name = "ActiveDropdown"
+        dropdown.BackgroundColor3 = DarkerBackground
+        dropdown.BorderSizePixel = 0
+        dropdown.ZIndex = 210
+        dropdown.Parent = DropdownOverlay
+
+        local dropdownCorner = Instance.new("UICorner")
+        dropdownCorner.CornerRadius = UDim.new(0, 7)
+        dropdownCorner.Parent = dropdown
+
+        local dropdownStroke = Instance.new("UIStroke")
+        dropdownStroke.Color = ThemeColor
+        dropdownStroke.Thickness = 1
+        dropdownStroke.Parent = dropdown
+
+        local list = Instance.new("ScrollingFrame")
+        list.Size = UDim2.new(1, 0, 1, 0)
+        list.BackgroundTransparency = 1
+        list.BorderSizePixel = 0
+        list.ScrollBarThickness = 4
+        list.ScrollBarImageColor3 = ThemeColor
+        list.CanvasSize = UDim2.new(0, 0, 0, 0)
+        list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        list.ZIndex = 211
+        list.Parent = dropdown
+
+        local padding = Instance.new("UIPadding")
+        padding.PaddingTop = UDim.new(0, 5)
+        padding.PaddingBottom = UDim.new(0, 5)
+        padding.Parent = list
+
+        local layout = Instance.new("UIListLayout")
+        layout.Padding = UDim.new(0, 3)
+        layout.Parent = list
+
+        for _, option in ipairs(options) do
+            local optionButton = Instance.new("TextButton")
+            optionButton.Size = UDim2.new(1, -10, 0, 30)
+            optionButton.BackgroundColor3 = ButtonBackground
+            optionButton.Text = tostring(option)
+            optionButton.TextColor3 = TextColor
+            optionButton.TextSize = 10
+            optionButton.Font = Enum.Font.GothamSemibold
+            optionButton.TextXAlignment = Enum.TextXAlignment.Left
+            optionButton.AutoButtonColor = false
+            optionButton.ZIndex = 212
+            optionButton.Parent = list
+
+            local optionPadding = Instance.new("UIPadding")
+            optionPadding.PaddingLeft = UDim.new(0, 8)
+            optionPadding.Parent = optionButton
+
+            local optionCorner = Instance.new("UICorner")
+            optionCorner.CornerRadius = UDim.new(0, 5)
+            optionCorner.Parent = optionButton
+
+            optionButton.MouseButton1Click:Connect(function()
+                selector.Text = tostring(option)
+                CloseDropdown()
+
+                pcall(function()
+                    onSelected(option)
+                end)
+            end)
+        end
+
+        local buttonPos = selector.AbsolutePosition
+        local buttonSize = selector.AbsoluteSize
+
+        local height = math.min(250, (#options * 33) + 10)
+
+        dropdown.Size = UDim2.new(
+            0,
+            buttonSize.X,
+            0,
+            height
+        )
+
+        dropdown.Position = UDim2.new(
+            0,
+            buttonPos.X,
+            0,
+            buttonPos.Y + buttonSize.Y + 3
+        )
+
+        CurrentDropdown = dropdown
+    end)
+
+    return container, selector
+end
+
+----------------------------------------------------------------
+--// MAIN PAGE
+----------------------------------------------------------------
+
+createSectionTitle("OTHER FEATURES", MainPage, 1)
+
+--// AUTO BASKETBALL
+createToggleBar("Auto Basketball", function(state)
+
+    if state then
+        Notify("Basketball", "Enabled", 2)
+
+        task.spawn(function()
+            while Features["Auto Basketball"] do
+
+                pcall(function()
+                    local character = LocalPlayer.Character
+                    local hrp =
+                        character
+                        and character:FindFirstChild("HumanoidRootPart")
+
+                    local folder =
+                        workspace:FindFirstChild("ThatOneThing91")
+
+                    local basketball =
+                        folder
+                        and folder:FindFirstChild("Basketball")
+
+                    if hrp and basketball then
+
+                        local target =
+                            Vector3.new(
+                                -341.5028991699219,
+                                1732.2828369140625,
+                                -414.27392578125
+                            )
+
+                        hrp.CFrame = CFrame.new(target)
+
+                        if basketball:IsA("BasePart") then
+                            pcall(function()
+                                firetouchinterest(hrp, basketball, 0)
+                                task.wait()
+                                firetouchinterest(hrp, basketball, 1)
+                            end)
+                        end
+                    end
+                end)
+
+                task.wait(0.4)
+            end
+        end)
+
+    else
+        Notify("Basketball", "Disabled", 2)
+    end
+
+end, MainPage, 2)
+
+--// INSTANT AUCTION ENTRY
+do
+    local hooked = {}
+
+    local function MakeInstant(prompt)
+
+        if prompt:IsA("ProximityPrompt")
+            and prompt.Name == "EnterAuction" then
+
+            prompt.HoldDuration = 0
+
+            if not hooked[prompt] then
+                hooked[prompt] = true
+
+                prompt:GetPropertyChangedSignal("HoldDuration"):Connect(function()
+
+                    if prompt.Parent
+                        and Features["Instant Auction Entry"] then
+
+                        prompt.HoldDuration = 0
+                    end
+                end)
+            end
+        end
+    end
+
+    createToggleBar("Instant Auction Entry", function(state)
+
+        if state then
+
+            Notify(
+                "Auction Entry",
+                "Enabled",
+                2
+            )
+
+            for _, object in ipairs(workspace:GetDescendants()) do
+                MakeInstant(object)
+            end
+
+        else
+
+            Notify(
+                "Auction Entry",
+                "Disabled",
+                2
+            )
+        end
+
+    end, MainPage, 3)
+
+    workspace.DescendantAdded:Connect(function(object)
+
+        if Features["Instant Auction Entry"] then
+            task.defer(function()
+                MakeInstant(object)
+            end)
+        end
+
+    end)
+end
+
+--// TREE TELEPORTER
+createToggleBar("Tree Teleporter", function(state)
+
+    if state then
+
+        Notify(
+            "Tree Teleporter",
+            "Enabled",
+            2
+        )
+
+        task.spawn(function()
+
+            while Features["Tree Teleporter"] do
+
+                pcall(function()
+
+                    local character = LocalPlayer.Character
+                    local hrp =
+                        character
+                        and character:FindFirstChild("HumanoidRootPart")
+
+                    if not hrp then
+                        return
+                    end
+
+                    local assets =
+                        workspace:FindFirstChild("BBOW Builder Assets")
+
+                    if not assets then
+                        return
+                    end
+
+                    local other =
+                        assets:FindFirstChild(
+                            "Other Buildings and  Decoration"
+                        )
+
+                    if not other then
+                        return
+                    end
+
+                    local trees = other:FindFirstChild("Trees")
+
+                    if not trees then
+                        return
+                    end
+
+                    local order = {
+                        "8",
+                        "Apple Tree",
+                        "4",
+                        "2",
+                        "6",
+                        "5",
+                        "7",
+                        "3"
+                    }
+
+                    for _, name in ipairs(order) do
+
+                        if not Features["Tree Teleporter"] then
+                            break
+                        end
+
+                        local tree = trees:FindFirstChild(name)
+
+                        if tree then
+
+                            local part =
+                                tree:IsA("BasePart")
+                                and tree
+                                or tree:FindFirstChildWhichIsA(
+                                    "BasePart",
+                                    true
+                                )
+
+                            if part then
+                                hrp.CFrame =
+                                    part.CFrame
+                                    + Vector3.new(0, 3, 0)
+
+                                task.wait(0.15)
+                            end
+                        end
+                    end
+                end)
+
+                task.wait(0.2)
+            end
+        end)
+
+    else
+
+        Notify(
+            "Tree Teleporter",
+            "Disabled",
+            2
+        )
+    end
+
+end, MainPage, 4)
+
+--// HAY COLLECTOR
+createToggleBar("Hay Collector", function(state)
+
+    if state then
+
+        Notify(
+            "Hay Collector",
+            "Enabled",
+            2
+        )
+
+        task.spawn(function()
+
+            local targets = {
+                "433",
+                "479",
+                "449",
+                "399",
+                "88",
+                "394",
+                "242",
+                "Hay",
+                "408",
+                "454",
+                "373"
+            }
+
+            while Features["Hay Collector"] do
+
+                pcall(function()
+
+                    local character = LocalPlayer.Character
+                    local hrp =
+                        character
+                        and character:FindFirstChild("HumanoidRootPart")
+
+                    local assets =
+                        workspace:FindFirstChild("BBOW Builder Assets")
+
+                    if not assets then
+                        return
+                    end
+
+                    local other =
+                        assets:FindFirstChild(
+                            "Other Buildings and  Decoration"
+                        )
+
+                    if not other then
+                        return
+                    end
+
+                    local trees = other:FindFirstChild("Trees")
+
+                    if not trees or not hrp then
+                        return
+                    end
+
+                    for _, name in ipairs(targets) do
+
+                        if not Features["Hay Collector"] then
+                            break
+                        end
+
+                        local target = trees:FindFirstChild(name)
+
+                        if target then
+
+                            local part =
+                                target:IsA("BasePart")
+                                and target
+                                or target:FindFirstChildWhichIsA(
+                                    "BasePart",
+                                    true
+                                )
+
+                            if part then
+
+                                hrp.CFrame =
+                                    part.CFrame
+                                    + Vector3.new(0, 3, 0)
+
+                                task.wait(0.12)
+                            end
+                        end
+                    end
+                end)
+
+                task.wait(0.2)
+            end
+        end)
+
+    else
+
+        Notify(
+            "Hay Collector",
+            "Disabled",
+            2
+        )
+    end
+
+end, MainPage, 5)
+
+--// POLICE AUCTION
+createToggleBar("Police Auction", function(state)
+
+    if state then
+
+        Notify(
+            "Police Auction",
+            "Enabled",
+            2
+        )
+
+        task.spawn(function()
+
+            while Features["Police Auction"] do
+
+                pcall(function()
+
+                    local debris =
+                        workspace:FindFirstChild("_Debris")
+
+                    local garages =
+                        debris
+                        and debris:FindFirstChild("Garages")
+
+                    local character = LocalPlayer.Character
+
+                    local hrp =
+                        character
+                        and character:FindFirstChild("HumanoidRootPart")
+
+                    if not garages or not hrp then
+                        return
+                    end
+
+                    for _, garage in ipairs(garages:GetChildren()) do
+
+                        if not Features["Police Auction"] then
+                            break
+                        end
+
+                        local warning =
+                            garage:FindFirstChild(
+                                "PoliceWarning",
+                                true
+                            )
+
+                        if warning then
+
+                            local entry =
+                                garage:FindFirstChild(
+                                    "EntrySquare",
+                                    true
+                                )
+
+                            local part =
+                                entry
+                                and (
+                                    entry:FindFirstChild(
+                                        "PromptPart",
+                                        true
+                                    )
+                                    or entry:FindFirstChildWhichIsA(
+                                        "BasePart",
+                                        true
+                                    )
+                                )
+
+                            if part then
+
+                                hrp.CFrame =
+                                    part.CFrame
+                                    + Vector3.new(0, 3, 0)
+
+                                task.wait(0.25)
+                            end
+                        end
+                    end
+                end)
+
+                task.wait(0.4)
+            end
+        end)
+
+    else
+
+        Notify(
+            "Police Auction",
+            "Disabled",
+            2
+        )
+    end
+
+end, MainPage, 6)
+
+----------------------------------------------------------------
+--// FARMING PAGE
+----------------------------------------------------------------
+
+createSectionTitle(
+    "AUCTION FARMING",
+    FarmingPage,
+    1
+)
+
+local FarmingInfo = Instance.new("TextLabel")
+FarmingInfo.Size = UDim2.new(1, -4, 0, 48)
+FarmingInfo.BackgroundTransparency = 1
+FarmingInfo.TextColor3 = MutedText
+FarmingInfo.TextSize = 11
+FarmingInfo.Font = Enum.Font.Gotham
+FarmingInfo.TextWrapped = true
+FarmingInfo.TextXAlignment = Enum.TextXAlignment.Left
+FarmingInfo.LayoutOrder = 2
+FarmingInfo.Parent = FarmingPage
+
+local function UpdateFarmingInfo()
+
+    FarmingInfo.Text =
+        "Start: "
+        .. SelectedFarm
+        .. "\n"
+        .. "Farming cycles through available garages in "
+        .. SelectedArea
+        .. ". Auto Bid: "
+        .. (Features["Auto Bid"] and "ON" or "OFF")
+        .. " | Pause: "
+        .. (Features["Pause Auction"] and "ON" or "OFF")
+end
+
+--// SELECTORS
+local AreaSelectorContainer
+local AreaSelector
+
+local FarmSelectorContainer
+local FarmSelector
+
+AreaSelectorContainer, AreaSelector =
+    createSelector(
+        "AREA",
+        SelectedArea,
+        function()
+            return AreaOrder
+        end,
+        function(option)
+
+            SelectedArea = option
+            CurrentFarmIndex = 1
+
+            local auctions =
+                AuctionAreas[SelectedArea]
+
+            if auctions and #auctions > 0 then
+                SelectedFarm = auctions[1]
+            end
+
+            if FarmSelector then
+                FarmSelector.Text = SelectedFarm
+            end
+
+            UpdateFarmingInfo()
+        end,
+        FarmingPage,
+        3
+    )
+
+FarmSelectorContainer, FarmSelector =
+    createSelector(
+        "STARTING AUCTION",
+        SelectedFarm,
+        function()
+
+            return AuctionAreas[SelectedArea]
+                or {}
+
+        end,
+        function(option)
+
+            SelectedFarm = option
+
+            local auctions =
+                AuctionAreas[SelectedArea]
+
+            for index, name in ipairs(auctions or {}) do
+
+                if name == option then
+                    CurrentFarmIndex = index
+                    break
+                end
+            end
+
+            UpdateFarmingInfo()
+        end,
+        FarmingPage,
+        4
+    )
+
+----------------------------------------------------------------
+--// FARMING REMOTES
+----------------------------------------------------------------
+
+local function GetAuctionFolder()
+
+    local events =
+        ReplicatedStorage:FindFirstChild("Events")
+
+    if not events then
+        return nil
+    end
+
+    return events:FindFirstChild("Auction")
+end
+
+local function GetBidEvent()
+
+    local auction = GetAuctionFolder()
+
+    if not auction then
+        return nil
+    end
+
+    return auction:FindFirstChild("Bid")
+end
+
+local function GetPauseEvent()
+
+    local auction = GetAuctionFolder()
+
+    if not auction then
+        return nil
+    end
+
+    return auction:FindFirstChild(
+        "RequestAuctionPause"
+    )
+end
+
+----------------------------------------------------------------
+--// AUCTION UI
+----------------------------------------------------------------
+
+local function GetAuctionContainer()
+
+    local playerGui =
+        LocalPlayer:FindFirstChild("PlayerGui")
+
+    if not playerGui then
+        return nil
+    end
+
+    local controller =
+        playerGui:FindFirstChild("UIControllerGui")
+
+    if not controller then
+        return nil
+    end
+
+    return controller:FindFirstChild(
+        "AuctionBiddingContainer"
+    )
+end
+
+local function GetBidButton()
+
+    local container =
+        GetAuctionContainer()
+
+    if not container then
+        return nil
+    end
+
+    local button =
+        container:FindFirstChild("BidButton")
+
+    if not button then
+        return nil
+    end
+
+    if button.Visible and button.Active then
+        return button
+    end
+
+    return nil
+end
+
+local function IsAuctionUIOpen()
+
+    local container =
+        GetAuctionContainer()
+
+    if not container then
+        return false
+    end
+
+    if container.Visible then
+        return true
+    end
+
+    return GetBidButton() ~= nil
+end
+
+----------------------------------------------------------------
+--// GARAGE FINDING
+----------------------------------------------------------------
+
+local function GetGarageByName(name)
+
+    -- Primary location
+    local debris =
+        workspace:FindFirstChild("_Debris")
+
+    if debris then
+
+        local garages =
+            debris:FindFirstChild("Garages")
+
+        if garages then
+
+            local garage =
+                garages:FindFirstChild(name)
+
+            if garage then
+                return garage
+            end
+        end
+    end
+
+    -- Same-area fallback
+    local areas =
+        workspace:FindFirstChild("Areas")
+
+    if areas then
+
+        local area =
+            areas:FindFirstChild(SelectedArea)
+
+        if area then
+
+            local garage =
+                area:FindFirstChild(name, true)
+
+            if garage then
+                return garage
+            end
+        end
+    end
+
+    return nil
+end
+
+local function GetGarageEntry(garage)
+
+    if not garage then
+        return nil
+    end
+
+    local entry =
+        garage:FindFirstChild(
+            "EntrySquare",
+            true
+        )
+
+    if entry then
+
+        local promptPart =
+            entry:FindFirstChild(
+                "PromptPart",
+                true
+            )
+
+        if promptPart then
+            return promptPart
+        end
+
+        local base =
+            entry:FindFirstChildWhichIsA(
+                "BasePart",
+                true
+            )
+
+        if base then
+            return base
+        end
+    end
+
+    return garage:FindFirstChildWhichIsA(
+        "BasePart",
+        true
+    )
+end
+
+local function GetGaragePrompt(garage)
+
+    if not garage then
+        return nil
+    end
+
+    local prompt =
+        garage:FindFirstChild(
+            "EnterAuction",
+            true
+        )
+
+    if prompt
+        and prompt:IsA("ProximityPrompt") then
+
+        return prompt
+    end
+
+    return nil
+end
+
+----------------------------------------------------------------
+--// TELEPORT
+----------------------------------------------------------------
+
+local function TeleportToGarage(name)
+
+    local garage =
+        GetGarageByName(name)
+
+    if not garage then
+        return false
+    end
+
+    local target =
+        GetGarageEntry(garage)
+
+    local character =
+        LocalPlayer.Character
+
+    local hrp =
+        character
+        and character:FindFirstChild(
+            "HumanoidRootPart"
+        )
+
+    if not target or not hrp then
+        return false
+    end
+
+    hrp.CFrame =
+        target.CFrame
+        + Vector3.new(0, 3, 0)
+
+    return true
+end
+
+----------------------------------------------------------------
+--// ENTER AUCTION
+----------------------------------------------------------------
+
+local function EnterGarage(name)
+
+    local garage =
+        GetGarageByName(name)
+
+    if not garage then
+        return false
+    end
+
+    local prompt =
+        GetGaragePrompt(garage)
+
+    if not prompt then
+        return false
+    end
+
+    pcall(function()
+        prompt.HoldDuration = 0
+    end)
+
+    if typeof(fireproximityprompt) ~= "function" then
+        return false
+    end
+
+    local success =
+        pcall(function()
+            fireproximityprompt(prompt)
+        end)
+
+    return success
+end
+
+----------------------------------------------------------------
+--// WAIT FOR BID UI
+----------------------------------------------------------------
+
+local function WaitForBidButton(
+    runId,
+    timeout
+)
+
+    local started =
+        os.clock()
+
+    while
+        os.clock() - started
+        < timeout
+    do
+
+        if not Features["Farming"] then
+            return nil
+        end
+
+        if FarmingRunId ~= runId then
+            return nil
+        end
+
+        local button =
+            GetBidButton()
+
+        if button then
+            return button
+        end
+
+        task.wait(0.1)
+    end
+
+    return nil
+end
+
+----------------------------------------------------------------
+--// BID
+----------------------------------------------------------------
+
+local function PerformBid()
+
+    local button =
+        GetBidButton()
+
+    if not button then
+        return false
+    end
+
+    local bidEvent =
+        GetBidEvent()
+
+    if not bidEvent then
+        return false
+    end
+
+    local success =
+        pcall(function()
+            bidEvent:FireServer()
+        end)
+
+    return success
+end
+
+----------------------------------------------------------------
+--// PAUSE
+----------------------------------------------------------------
+
+local function PauseAuction()
+
+    local pauseEvent =
+        GetPauseEvent()
+
+    if not pauseEvent then
+        return false
+    end
+
+    local success =
+        pcall(function()
+            pauseEvent:FireServer(true)
+        end)
+
+    return success
+end
+
+--// RETRY PAUSE
+local function PauseAuctionWithRetry(runId)
+
+    for attempt = 1, 5 do
+
+        if not Features["Farming"] then
+            return false
+        end
+
+        if FarmingRunId ~= runId then
+            return false
+        end
+
+        if not Features["Pause Auction"] then
+            return false
+        end
+
+        if PauseAuction() then
+
+            task.wait(0.15)
+
+            return true
+        end
+
+        task.wait(0.25)
+    end
+
+    return false
+end
+
+----------------------------------------------------------------
+--// WAIT FOR AUCTION TO FINISH
+----------------------------------------------------------------
+
+local function WaitForAuctionToFinish(
+    runId,
+    maxTime
+)
+
+    local started =
+        os.clock()
+
+    local sawAuction =
+        false
+
+    while
+        os.clock() - started
+        < maxTime
+    do
+
+        if not Features["Farming"] then
+            return false
+        end
+
+        if FarmingRunId ~= runId then
+            return false
+        end
+
+        local auctionOpen =
+            IsAuctionUIOpen()
+
+        if auctionOpen then
+            sawAuction = true
+        end
+
+        -- Auction disappeared after being active
+        if sawAuction and not auctionOpen then
+            return true
+        end
+
+        task.wait(0.25)
+    end
+
+    -- If it timed out, allow the farming loop
+    -- to move forward instead of getting stuck forever.
+    return true
+end
+
+----------------------------------------------------------------
+--// FIND NEXT AVAILABLE GARAGE
+----------------------------------------------------------------
+
+local function GetNextGarage()
+
+    local auctions =
+        AuctionAreas[SelectedArea]
+
+    if not auctions
+        or #auctions == 0 then
+
+        return nil
+    end
+
+    local count =
+        #auctions
+
+    -- Start from the current index
+    for offset = 0, count - 1 do
+
+        local index =
+            ((CurrentFarmIndex - 1 + offset) % count)
+            + 1
+
+        local name =
+            auctions[index]
+
+        local garage =
+            GetGarageByName(name)
+
+        if garage then
+
+            CurrentFarmIndex =
+                index
+
+            return name, index
+        end
+    end
+
+    return nil
+end
+
+----------------------------------------------------------------
+--// MOVE TO NEXT GARAGE
+----------------------------------------------------------------
+
+local function AdvanceGarage()
+
+    local auctions =
+        AuctionAreas[SelectedArea]
+
+    if not auctions
+        or #auctions == 0 then
+
+        return nil
+    end
+
+    CurrentFarmIndex =
+        CurrentFarmIndex + 1
+
+    if CurrentFarmIndex > #auctions then
+        CurrentFarmIndex = 1
+    end
+
+    local name =
+        auctions[CurrentFarmIndex]
+
+    SelectedFarm = name
+
+    if FarmSelector then
+        FarmSelector.Text = name
+    end
+
+    UpdateFarmingInfo()
+
+    return name
+end
+
+----------------------------------------------------------------
+--// FARM ONE GARAGE
+----------------------------------------------------------------
+
+local function FarmGarage(
+    garageName,
+    runId
+)
+
+    if not garageName then
+        return false
+    end
+
+    if not Features["Farming"] then
+        return false
+    end
+
+    if FarmingRunId ~= runId then
+        return false
+    end
+
+    ------------------------------------------------------------
+    -- TELEPORT
+    ------------------------------------------------------------
+
+    local teleported =
+        TeleportToGarage(garageName)
+
+    if not teleported then
+        return false
+    end
+
+    task.wait(0.75)
+
+    if not Features["Farming"] then
+        return false
+    end
+
+    ------------------------------------------------------------
+    -- ENTER
+    ------------------------------------------------------------
+
+    local entered =
+        EnterGarage(garageName)
+
+    if not entered then
+        return false
+    end
+
+    ------------------------------------------------------------
+    -- WAIT FOR AUCTION
+    ------------------------------------------------------------
+
+    local bidButton =
+        WaitForBidButton(
+            runId,
+            30
+        )
+
+    if not bidButton then
+        return false
+    end
+
+    ------------------------------------------------------------
+    -- BID
+    ------------------------------------------------------------
+
+    if Features["Auto Bid"] then
+
+        local bidSuccess =
+            PerformBid()
+
+        if not bidSuccess then
+            return false
+        end
+
+        task.wait(0.2)
+
+        --------------------------------------------------------
+        -- PAUSE AFTER BID
+        --------------------------------------------------------
+
+        if Features["Pause Auction"] then
+
+            local paused =
+                PauseAuctionWithRetry(
+                    runId
+                )
+
+            if paused then
+
+                Notify(
+                    "Auction Farming",
+                    "Paused " .. garageName,
+                    2
+                )
+
+            else
+
+                Notify(
+                    "Auction Farming",
+                    "Pause request failed",
+                    2
+                )
+            end
+        end
+    end
+
+    ------------------------------------------------------------
+    -- WAIT FOR CURRENT AUCTION TO FINISH
+    ------------------------------------------------------------
+
+    WaitForAuctionToFinish(
+        runId,
+        45
+    )
+
+    return true
+end
+
+----------------------------------------------------------------
+--// MAIN FARM LOOP
+----------------------------------------------------------------
+
+local function StartFarming()
+
+    if FarmingBusy then
+        return
+    end
+
+    FarmingBusy = true
+    FarmingRunId += 1
+
+    local runId =
+        FarmingRunId
+
+    task.spawn(function()
+
+        local failedAttempts = 0
+
+        while
+            Features["Farming"]
+            and FarmingRunId == runId
+        do
+
+            ----------------------------------------------------
+            -- GET NEXT AVAILABLE GARAGE
+            ----------------------------------------------------
+
+            local garageName =
+                GetNextGarage()
+
+            if not garageName then
+
+                Notify(
+                    "Auction Farming",
+                    "No garages available in "
+                    .. SelectedArea
+                    .. ". Retrying in 5 seconds.",
+                    3
+                )
+
+                task.wait(5)
+
+                continue
+            end
+
+            SelectedFarm =
+                garageName
+
+            if FarmSelector then
+                FarmSelector.Text =
+                    garageName
+            end
+
+            UpdateFarmingInfo()
+
+            ----------------------------------------------------
+            -- TRY GARAGE
+            ----------------------------------------------------
+
+            Notify(
+                "Auction Farming",
+                "Going to "
+                .. garageName,
+                2
+            )
+
+            local success =
+                FarmGarage(
+                    garageName,
+                    runId
+                )
+
+            if not Features["Farming"]
+                or FarmingRunId ~= runId then
+
+                break
+            end
+
+            ----------------------------------------------------
+            -- SUCCESS
+            ----------------------------------------------------
+
+            if success then
+
+                failedAttempts = 0
+
+                Notify(
+                    "Auction Farming",
+                    "Finished "
+                    .. garageName,
+                    2
+                )
+
+                task.wait(1)
+
+                ------------------------------------------------
+                -- NEXT GARAGE
+                ------------------------------------------------
+
+                AdvanceGarage()
+
+            else
+
+                ------------------------------------------------
+                -- FAILED
+                ------------------------------------------------
+
+                failedAttempts += 1
+
+                Notify(
+                    "Auction Farming",
+                    garageName
+                    .. " unavailable — trying next garage",
+                    2
+                )
+
+                task.wait(5)
+
+                ------------------------------------------------
+                -- MOVE TO NEXT GARAGE
+                ------------------------------------------------
+
+                AdvanceGarage()
+            end
+        end
+
+        FarmingBusy = false
+    end)
+end
+
+----------------------------------------------------------------
+--// AUTO BID
+----------------------------------------------------------------
+
+createToggleBar(
+    "Auto Bid",
+    function(state)
+
+        if state then
+
+            Notify(
+                "Auto Bid",
+                "Enabled",
+                2
+            )
+
+            task.spawn(function()
+
+                while Features["Auto Bid"] do
+
+                    pcall(function()
+
+                        local button =
+                            GetBidButton()
+
+                        if button then
+
+                            local bidEvent =
+                                GetBidEvent()
+
+                            if bidEvent then
+
+                                bidEvent:FireServer()
+                            end
+                        end
+                    end)
+
+                    task.wait(0.15)
+                end
+            end)
+
+        else
+
+            Notify(
+                "Auto Bid",
+                "Disabled",
+                2
+            )
+        end
+
+        UpdateFarmingInfo()
+    end,
+    FarmingPage,
+    5
+)
+
+----------------------------------------------------------------
+--// INSTANT UNLOAD
+----------------------------------------------------------------
+
+do
+
+    local running = false
+
+    local function GetVehicleId()
+
+        local id =
+            LocalPlayer:GetAttribute(
+                "EquippedVehicle"
+            )
+
+        if typeof(id) == "string" then
+            return id
+        end
+
+        return nil
+    end
+
+    local function GetVehicleItems()
+
+        local events =
+            ReplicatedStorage:FindFirstChild(
+                "Events"
+            )
+
+        if not events then
+            return nil
+        end
+
+        local vehicles =
+            events:FindFirstChild(
+                "Vehicles"
+            )
+
+        if not vehicles then
+            return nil
+        end
+
+        local remote =
+            vehicles:FindFirstChild(
+                "GetVehicleItems"
+            )
+
+        if not remote then
+            return nil
+        end
+
+        local vehicleId =
+            GetVehicleId()
+
+        if not vehicleId then
+            return nil
+        end
+
+        local success, result =
+            pcall(function()
+
+                return remote:InvokeServer(
+                    vehicleId
+                )
+
+            end)
+
+        if success then
+            return result
+        end
+
+        return nil
+    end
+
+    local function TransferItems(items)
+
+        local events =
+            ReplicatedStorage:FindFirstChild(
+                "Events"
+            )
+
+        if not events then
+            return false
+        end
+
+        local vehicles =
+            events:FindFirstChild(
+                "Vehicles"
+            )
+
+        if not vehicles then
+            return false
+        end
+
+        local transfer =
+            vehicles:FindFirstChild(
+                "TransferVehicleItemsToInventory"
+            )
+
+        if not transfer then
+            return false
+        end
+
+        local ids = {}
+
+        local function collect(value)
+
+            if typeof(value) == "string" then
+
+                table.insert(
+                    ids,
+                    value
+                )
+
+            elseif typeof(value) == "table" then
+
+                for _, child in pairs(value) do
+                    collect(child)
+                end
+            end
+        end
+
+        collect(items)
+
+        if #ids == 0 then
+            return false
+        end
+
+        local success =
+            pcall(function()
+
+                transfer:FireServer(
+                    ids
+                )
+
+            end)
+
+        return success
+    end
+
+    local function Unload()
+
+        local items =
+            GetVehicleItems()
+
+        if not items then
+            return false
+        end
+
+        return TransferItems(
+            items
+        )
+    end
+
+    createToggleBar(
+        "Instant Unload",
+        function(state)
+
+            running = state
+
+            if state then
+
+                Notify(
+                    "Instant Unload",
+                    "Enabled",
+                    2
+                )
+
+                task.spawn(function()
+
+                    while running do
+
+                        pcall(Unload)
+
+                        task.wait(1)
+                    end
+                end)
+
+            else
+
+                Notify(
+                    "Instant Unload",
+                    "Disabled",
+                    2
+                )
+            end
+        end,
+        FarmingPage,
+        6
+    )
+end
+
+----------------------------------------------------------------
+--// PAUSE AUCTION
+----------------------------------------------------------------
+
+createToggleBar(
+    "Pause Auction",
+    function(state)
+
+        if state then
+
+            Notify(
+                "Pause Auction",
+                "Will pause after every bid",
+                2
+            )
+
+        else
+
+            Notify(
+                "Pause Auction",
+                "Automatic pausing disabled",
+                2
+            )
+        end
+
+        UpdateFarmingInfo()
+    end,
+    FarmingPage,
+    7
+)
+
+----------------------------------------------------------------
+--// FARMING TOGGLE
+----------------------------------------------------------------
+
+createToggleBar(
+    "Farming",
+    function(state)
+
+        if state then
+
+            Notify(
+                "Auction Farming",
+                "Automatic farming enabled",
+                2
+            )
+
+            StartFarming()
+
+        else
+
+            FarmingRunId += 1
+            FarmingBusy = false
+
+            Notify(
+                "Auction Farming",
+                "Stopped",
+                2
+            )
+        end
+
+        UpdateFarmingInfo()
+    end,
+    FarmingPage,
+    8
+)
+
+----------------------------------------------------------------
+--// TAB SWITCHING
+----------------------------------------------------------------
+
+local function ShowPage(page)
+
+    CloseDropdown()
+
+    MainPage.Visible =
+        page == MainPage
+
+    FarmingPage.Visible =
+        page == FarmingPage
+
+    if page == MainPage then
+
+        MainTab.BackgroundColor3 =
+            ThemeColor
+
+        MainTab.TextColor3 =
+            TextColor
+
+        FarmingTab.BackgroundColor3 =
+            ButtonBackground
+
+        FarmingTab.TextColor3 =
+            MutedText
+
+    else
+
+        FarmingTab.BackgroundColor3 =
+            ThemeColor
+
+        FarmingTab.TextColor3 =
+            TextColor
+
+        MainTab.BackgroundColor3 =
+            ButtonBackground
+
+        MainTab.TextColor3 =
+            MutedText
+    end
+end
+
+MainTab.MouseButton1Click:Connect(function()
+    ShowPage(MainPage)
+end)
+
+FarmingTab.MouseButton1Click:Connect(function()
+    ShowPage(FarmingPage)
+end)
+
+----------------------------------------------------------------
+--// SCROLL CLOSE DROPDOWNS
+----------------------------------------------------------------
+
+MainPage:GetPropertyChangedSignal(
+    "CanvasPosition"
+):Connect(CloseDropdown)
+
+FarmingPage:GetPropertyChangedSignal(
+    "CanvasPosition"
+):Connect(CloseDropdown)
+
+----------------------------------------------------------------
+--// P KEY = AUTO BID
+----------------------------------------------------------------
+
+UserInputService.InputBegan:Connect(function(
+    input,
+    processed
+)
+
+    if processed then
+        return
+    end
+
+    if input.KeyCode == Enum.KeyCode.P then
+
+        local current =
+            Features["Auto Bid"] == true
+
+        Features["Auto Bid"] =
+            not current
+
+        local newState =
+            Features["Auto Bid"]
+
+        --------------------------------------------------------
+        -- Find the Auto Bid toggle and update its appearance
+        --------------------------------------------------------
+
+        for _, object in ipairs(
+            FarmingPage:GetChildren()
+        ) do
+
+            if object:IsA("Frame") then
+
+                local label =
+                    object:FindFirstChildWhichIsA(
+                        "TextLabel"
+                    )
+
+                if label
+                    and label.Text == "Auto Bid" then
+
+                    local toggle =
+                        object:FindFirstChildWhichIsA(
+                            "TextButton"
+                        )
+
+                    if toggle then
+
+                        if newState then
+
+                            toggle.BackgroundColor3 =
+                                ThemeColor
+
+                            toggle.Text =
+                                "ON"
+
+                        else
+
+                            toggle.BackgroundColor3 =
+                                OffColor
+
+                            toggle.Text =
+                                "OFF"
+                        end
+                    end
+                end
+            end
+        end
+
+        if newState then
+
+            Notify(
+                "Auto Bid",
+                "Enabled (P)",
+                2
+            )
+
+            task.spawn(function()
+
+                while Features["Auto Bid"] do
+
+                    pcall(function()
+
+                        local button =
+                            GetBidButton()
+
+                        if button then
+
+                            local bidEvent =
+                                GetBidEvent()
+
+                            if bidEvent then
+                                bidEvent:FireServer()
+                            end
+                        end
+                    end)
+
+                    task.wait(0.15)
+                end
+            end)
+
+        else
+
+            Notify(
+                "Auto Bid",
+                "Disabled (P)",
+                2
+            )
+        end
+
+        UpdateFarmingInfo()
+    end
+end)
+
+----------------------------------------------------------------
+--// COMMA = SHOW / HIDE
+----------------------------------------------------------------
+
+UserInputService.InputBegan:Connect(function(
+    input,
+    processed
+)
+
+    if processed then
+        return
+    end
+
+    if input.KeyCode == Enum.KeyCode.Comma then
+
+        Main.Visible =
+            not Main.Visible
+
+        CloseDropdown()
+    end
+end)
+
+----------------------------------------------------------------
+--// THEME PICKER
+----------------------------------------------------------------
+
+local ThemePicker = Instance.new("Frame")
+ThemePicker.Size = UDim2.new(0, 230, 0, 190)
+ThemePicker.Position = UDim2.new(0.5, -115, 0.5, -95)
+ThemePicker.BackgroundColor3 = DarkerBackground
+ThemePicker.Visible = false
+ThemePicker.ZIndex = 500
+ThemePicker.Parent = ScreenGui
+
+local ThemePickerCorner = Instance.new("UICorner")
+ThemePickerCorner.CornerRadius = UDim.new(0, 10)
+ThemePickerCorner.Parent = ThemePicker
+
+local ThemePickerStroke = Instance.new("UIStroke")
+ThemePickerStroke.Color = ThemeColor
+ThemePickerStroke.Parent = ThemePicker
+
+local ThemeTitle = Instance.new("TextLabel")
+ThemeTitle.Size = UDim2.new(1, -20, 0, 30)
+ThemeTitle.Position = UDim2.new(0, 10, 0, 8)
+ThemeTitle.BackgroundTransparency = 1
+ThemeTitle.Text = "THEME COLOR"
+ThemeTitle.TextColor3 = TextColor
+ThemeTitle.TextSize = 13
+ThemeTitle.Font = Enum.Font.GothamBold
+ThemeTitle.TextXAlignment = Enum.TextXAlignment.Left
+ThemeTitle.ZIndex = 501
+ThemeTitle.Parent = ThemePicker
+
+local inputs = {}
+local names = {
+    "R",
+    "G",
+    "B"
+}
+
+for i, name in ipairs(names) do
+
+    local box =
+        Instance.new("TextBox")
+
+    box.Size =
+        UDim2.new(
+            1,
+            -30,
+            0,
+            30
+        )
+
+    box.Position =
+        UDim2.new(
+            0,
+            15,
+            0,
+            42 + ((i - 1) * 38)
+        )
+
+    box.BackgroundColor3 =
+        ButtonBackground
+
+    box.Text =
+        tostring(
+            math.floor(
+                ThemeColor[name] * 255
+            )
+        )
+
+    box.TextColor3 =
+        TextColor
+
+    box.TextSize =
+        11
+
+    box.Font =
+        Enum.Font.Gotham
+
+    box.ClearTextOnFocus =
+        false
+
+    box.ZIndex =
+        501
+
+    box.Parent =
+        ThemePicker
+
+    local corner =
+        Instance.new("UICorner")
+
+    corner.CornerRadius =
+        UDim.new(0, 6)
+
+    corner.Parent =
+        box
+
+    inputs[name] =
+        box
+end
+
+local ApplyTheme =
+    Instance.new("TextButton")
+
+ApplyTheme.Size =
+    UDim2.new(
+        1,
+        -30,
+        0,
+        30
+    )
+
+ApplyTheme.Position =
+    UDim2.new(
+        0,
+        15,
+        1,
+        -38
+    )
+
+ApplyTheme.BackgroundColor3 =
+    ThemeColor
+
+ApplyTheme.Text =
+    "APPLY"
+
+ApplyTheme.TextColor3 =
+    TextColor
+
+ApplyTheme.TextSize =
+    11
+
+ApplyTheme.Font =
+    Enum.Font.GothamBold
+
+ApplyTheme.AutoButtonColor =
+    false
+
+ApplyTheme.ZIndex =
+    501
+
+ApplyTheme.Parent =
+    ThemePicker
+
+local ApplyCorner =
+    Instance.new("UICorner")
+
+ApplyCorner.CornerRadius =
+    UDim.new(0, 6)
+
+ApplyCorner.Parent =
+    ApplyTheme
+
+ThemeButton.MouseButton1Click:Connect(function()
+
+    ThemePicker.Visible =
+        not ThemePicker.Visible
+end)
+
+ApplyTheme.MouseButton1Click:Connect(function()
+
+    local r =
+        math.clamp(
+            tonumber(inputs.R.Text)
+            or 125,
+            0,
+            255
+        )
+
+    local g =
+        math.clamp(
+            tonumber(inputs.G.Text)
+            or 25,
+            0,
+            255
+        )
+
+    local b =
+        math.clamp(
+            tonumber(inputs.B.Text)
+            or 25,
+            0,
+            255
+        )
+
+    ThemeColor =
+        Color3.fromRGB(
+            r,
+            g,
+            b
+        )
+
+    MainStroke.Color =
+        ThemeColor
+
+    MainTab.BackgroundColor3 =
+        ThemeColor
+
+    ThemeButton.BackgroundColor3 =
+        ThemeColor
+
+    ApplyTheme.BackgroundColor3 =
+        ThemeColor
+
+    ThemePickerStroke.Color =
+        ThemeColor
+
+    for _, object in ipairs(
+        ScreenGui:GetDescendants()
+    ) do
+
+        if object:IsA("ScrollingFrame") then
+
+            object.ScrollBarImageColor3 =
+                ThemeColor
+        end
+    end
+
+    ThemePicker.Visible =
+        false
+
+    Notify(
+        "Theme",
+        "Theme updated",
+        2
+    )
+end)
+
+----------------------------------------------------------------
+--// RESIZE HANDLE
+----------------------------------------------------------------
+
+local ResizeHandle =
+    Instance.new("TextButton")
+
+ResizeHandle.Size =
+    UDim2.new(
+        0,
+        18,
+        0,
+        18
+    )
+
+ResizeHandle.Position =
+    UDim2.new(
+        1,
+        -20,
+        1,
+        -20
+    )
+
+ResizeHandle.BackgroundTransparency =
+    1
+
+ResizeHandle.Text =
+    "◢"
+
+ResizeHandle.TextColor3 =
+    MutedText
+
+ResizeHandle.TextSize =
+    13
+
+ResizeHandle.Font =
+    Enum.Font.GothamBold
+
+ResizeHandle.AutoButtonColor =
+    false
+
+ResizeHandle.Parent =
+    Main
+
+do
+
+    local resizing = false
+    local resizeStart
+    local startSize
+
+    ResizeHandle.InputBegan:Connect(function(input)
+
+        if input.UserInputType ==
+            Enum.UserInputType.MouseButton1 then
+
+            resizing = true
+            resizeStart = input.Position
+            startSize = Main.AbsoluteSize
+
+            input.Changed:Connect(function()
+
+                if input.UserInputState ==
+                    Enum.UserInputState.End then
+
+                    resizing = false
+                end
+            end)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+
+        if resizing
+            and input.UserInputType ==
+                Enum.UserInputType.MouseMovement then
+
+            local delta =
+                input.Position
+                - resizeStart
+
+            local width =
+                math.clamp(
+                    startSize.X + delta.X,
+                    MIN_WIDTH,
+                    MAX_WIDTH
+                )
+
+            local height =
+                math.clamp(
+                    startSize.Y + delta.Y,
+                    MIN_HEIGHT,
+                    MAX_HEIGHT
+                )
+
+            Main.Size =
+                UDim2.new(
+                    0,
+                    width,
+                    0,
+                    height
+                )
+        end
+    end)
+end
+
+----------------------------------------------------------------
+--// INITIAL INFO
+----------------------------------------------------------------
+
+UpdateFarmingInfo()
+
+Notify(
+    "Storage Hunters Hub",
+    "Loaded successfully",
+    3
+)
