@@ -1,0 +1,226 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Inventory = ReplicatedStorage
+    :WaitForChild("Events")
+    :WaitForChild("Inventory")
+
+local Wash = ReplicatedStorage
+    :WaitForChild("Events")
+    :WaitForChild("Wash")
+
+local GetPlayerInventory = Inventory:WaitForChild("GetPlayerInventory")
+local GetSlotState = Wash:WaitForChild("GetSlotState")
+local StartWash = Wash:WaitForChild("StartWash")
+
+local function IsUUID(value)
+    return typeof(value) == "string"
+        and value:match(
+            "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+        ) ~= nil
+end
+
+--==================================================
+-- FIND ALL DIRTY ITEMS
+--==================================================
+
+local function FindDirtyItems(value, results, seen)
+    if typeof(value) ~= "table" then
+        return
+    end
+
+    seen = seen or {}
+
+    if seen[value] then
+        return
+    end
+
+    seen[value] = true
+
+    local name = value.name or value.Name
+
+    if name == "Dirty" then
+        local guid
+
+        -- Look for a UUID directly inside this item.
+        for key, child in pairs(value) do
+            if IsUUID(child) then
+                guid = child
+                break
+            end
+
+            if IsUUID(key) then
+                guid = key
+                break
+            end
+        end
+
+        if guid then
+            table.insert(results, guid)
+        end
+    end
+
+    for key, child in pairs(value) do
+        if typeof(child) == "table" then
+            FindDirtyItems(child, results, seen)
+        end
+    end
+end
+
+local function GetDirtyItems()
+    local success, inventory = pcall(function()
+        return GetPlayerInventory:InvokeServer()
+    end)
+
+    if not success then
+        warn("Inventory error:", inventory)
+        return {}
+    end
+
+    local results = {}
+
+    FindDirtyItems(inventory, results)
+
+    return results
+end
+
+--==================================================
+-- GET WASH SLOTS
+--==================================================
+
+local function GetSlots()
+    local success, state = pcall(function()
+        return GetSlotState:InvokeServer()
+    end)
+
+    if not success then
+        warn("Slot state error:", state)
+        return nil
+    end
+
+    return state
+end
+
+--==================================================
+-- TEST
+--==================================================
+
+print("")
+print("==========================================")
+print("        AUTO WASH 3-SLOT TEST")
+print("==========================================")
+
+local dirtyItems = GetDirtyItems()
+
+print("Dirty items found:", #dirtyItems)
+
+for i, guid in ipairs(dirtyItems) do
+    print("Dirty #" .. i .. ":", guid)
+end
+
+if #dirtyItems == 0 then
+    warn("No Dirty items found.")
+    return
+end
+
+local state = GetSlots()
+
+if not state then
+    warn("Could not get wash slot state.")
+    return
+end
+
+local slots = state.slots
+local unlockedCount = tonumber(state.unlockedCount) or 3
+
+print("Unlocked slots:", unlockedCount)
+
+if typeof(slots) ~= "table" then
+    warn("Unexpected slot data.")
+    return
+end
+
+--==================================================
+-- FIND EMPTY SLOTS
+--==================================================
+
+local emptySlots = {}
+
+for slotNumber = 1, math.min(unlockedCount, 3) do
+    local slot = slots[slotNumber]
+
+    if not slot or not slot.ItemData then
+        table.insert(emptySlots, slotNumber)
+        print("Slot " .. slotNumber .. ": EMPTY")
+    else
+        print(
+            "Slot " ..
+            slotNumber ..
+            ": OCCUPIED"
+        )
+    end
+end
+
+print("Empty slots:", #emptySlots)
+
+if #emptySlots == 0 then
+    print("No empty wash slots.")
+    return
+end
+
+--==================================================
+-- FILL EMPTY SLOTS
+--==================================================
+
+local dirtyIndex = 1
+
+for _, slotNumber in ipairs(emptySlots) do
+    local guid = dirtyItems[dirtyIndex]
+
+    if not guid then
+        break
+    end
+
+    print("")
+    print(
+        "Starting wash:",
+        "Slot",
+        slotNumber,
+        "Item",
+        guid
+    )
+
+    local success, result = pcall(function()
+        return StartWash:InvokeServer(
+            slotNumber,
+            guid,
+            "Inventory"
+        )
+    end)
+
+    print("Success:", success)
+    print("Result:", result)
+
+    if success then
+        print(
+            "SUCCESS: Dirty item started in slot " ..
+            slotNumber
+        )
+    else
+        warn(
+            "FAILED: Could not start slot " ..
+            slotNumber
+        )
+    end
+
+    dirtyIndex += 1
+
+    task.wait(0.5)
+end
+
+print("")
+print("==========================================")
+print("           TEST COMPLETE")
+print("==========================================")
+print("Only StartWash was called.")
+print("Nothing was collected or claimed.")
+print("==========================================")
