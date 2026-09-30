@@ -1,0 +1,153 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterGui = game:GetService("StarterGui")
+
+local AREA = "The Mines"
+
+local UIEvents = ReplicatedStorage
+    :WaitForChild("Events")
+    :WaitForChild("UI")
+
+local GetLostItems = UIEvents:WaitForChild("GetLostItems")
+local ClaimLostItem = UIEvents:WaitForChild("ClaimLostItem")
+
+local function notify(text)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "Lost & Found Test",
+            Text = text,
+            Duration = 4
+        })
+    end)
+
+    print("[Lost & Found] " .. text)
+end
+
+--==================================================
+-- UUID CHECK
+--==================================================
+
+local function looksLikeUUID(value)
+    if type(value) ~= "string" then
+        return false
+    end
+
+    return value:match(
+        "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+    ) ~= nil
+end
+
+--==================================================
+-- FIND IDS INSIDE RETURNED DATA
+--==================================================
+
+local function findIDs(value, found, visited)
+    found = found or {}
+    visited = visited or {}
+
+    if type(value) == "string" then
+        if looksLikeUUID(value) then
+            found[value] = true
+        end
+
+        return found
+    end
+
+    if type(value) ~= "table" then
+        return found
+    end
+
+    if visited[value] then
+        return found
+    end
+
+    visited[value] = true
+
+    for key, child in pairs(value) do
+        -- Check both table keys and values
+        if looksLikeUUID(key) then
+            found[key] = true
+        end
+
+        findIDs(child, found, visited)
+    end
+
+    return found
+end
+
+--==================================================
+-- TEST
+--==================================================
+
+notify("Checking " .. AREA .. "...")
+
+local success, lostItems = pcall(function()
+    return GetLostItems:InvokeServer(AREA)
+end)
+
+if not success then
+    notify("GetLostItems failed")
+    warn("[Lost & Found] Error:", lostItems)
+    return
+end
+
+print("====================================")
+print("LOST & FOUND RETURN")
+print("====================================")
+
+if type(lostItems) == "table" then
+    for key, value in pairs(lostItems) do
+        print(key, value)
+
+        if type(value) == "table" then
+            for k, v in pairs(value) do
+                print("   ", k, v)
+            end
+        end
+    end
+else
+    print(lostItems)
+end
+
+local ids = findIDs(lostItems)
+
+local count = 0
+
+for _ in pairs(ids) do
+    count += 1
+end
+
+if count == 0 then
+    notify("No item IDs found")
+    warn("[Lost & Found] No UUIDs were detected in GetLostItems return.")
+    return
+end
+
+notify("Found " .. count .. " item(s)")
+
+--==================================================
+-- CLAIM EVERYTHING FOUND
+--==================================================
+
+local claimed = 0
+
+for itemId in pairs(ids) do
+    print("[Lost & Found] Attempting:", itemId)
+
+    local claimSuccess, result = pcall(function()
+        return ClaimLostItem:InvokeServer(
+            AREA,
+            itemId
+        )
+    end)
+
+    if claimSuccess then
+        claimed += 1
+        print("[Lost & Found] Claimed:", itemId, result)
+    else
+        warn("[Lost & Found] FAILED:", itemId, result)
+    end
+
+    task.wait(0.15)
+end
+
+notify("Finished - attempted " .. claimed .. " claim(s)")
