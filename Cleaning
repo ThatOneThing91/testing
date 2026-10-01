@@ -1,0 +1,224 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Events = ReplicatedStorage:WaitForChild("Events")
+local Wash = Events:WaitForChild("Wash")
+local Inventory = Events:WaitForChild("Inventory")
+
+local StartWash = Wash:WaitForChild("StartWash")
+local CollectWash = Wash:WaitForChild("CollectWash")
+local ClaimWashedItem = Wash:WaitForChild("ClaimWashedItem")
+local GetPlayerInventory = Inventory:WaitForChild("GetPlayerInventory")
+
+print("================================")
+print("AUTO WASH TEST STARTED")
+print("================================")
+
+--------------------------------------------------
+-- FIND UUID
+--------------------------------------------------
+
+local function getUUID(item, key)
+    if type(item) ~= "table" then
+        return nil
+    end
+
+    return item.UUID
+        or item.Uuid
+        or item.uuid
+        or item.Id
+        or item.ID
+        or item.ItemUUID
+        or item.ItemId
+        or (type(key) == "string" and key or nil)
+end
+
+--------------------------------------------------
+-- DETECT DIRTY
+--------------------------------------------------
+
+local function containsDirty(value, depth, visited)
+    depth = depth or 0
+    visited = visited or {}
+
+    if depth > 7 then
+        return false
+    end
+
+    if type(value) == "string" then
+        return string.find(string.lower(value), "dirty", 1, true) ~= nil
+    end
+
+    if type(value) ~= "table" then
+        return false
+    end
+
+    if visited[value] then
+        return false
+    end
+
+    visited[value] = true
+
+    for key, child in pairs(value) do
+        if type(key) == "string"
+            and string.find(string.lower(key), "dirty", 1, true)
+            and child ~= false
+            and child ~= nil then
+
+            return true
+        end
+
+        if containsDirty(child, depth + 1, visited) then
+            return true
+        end
+    end
+
+    return false
+end
+
+--------------------------------------------------
+-- GET DIRTY ITEMS
+--------------------------------------------------
+
+local function getDirtyItems()
+    local success, inventory = pcall(function()
+        return GetPlayerInventory:InvokeServer()
+    end)
+
+    if not success then
+        warn("[AUTO WASH] GetPlayerInventory failed:", inventory)
+        return {}
+    end
+
+    if type(inventory) ~= "table" then
+        warn("[AUTO WASH] Inventory wasn't a table.")
+        return {}
+    end
+
+    local results = {}
+    local seenUUIDs = {}
+
+    local function scan(tbl, depth)
+        if depth > 6 then
+            return
+        end
+
+        for key, value in pairs(tbl) do
+            if type(value) == "table" then
+
+                local uuid = getUUID(value, key)
+
+                if uuid and not seenUUIDs[uuid] and containsDirty(value) then
+                    seenUUIDs[uuid] = true
+
+                    table.insert(results, {
+                        UUID = uuid,
+                        Data = value
+                    })
+
+                    print("[AUTO WASH] DIRTY ITEM:", uuid)
+                end
+
+                scan(value, depth + 1)
+            end
+        end
+    end
+
+    scan(inventory, 0)
+
+    print("[AUTO WASH] Dirty items found:", #results)
+
+    return results
+end
+
+--------------------------------------------------
+-- TEST EXISTING WASHERS
+--------------------------------------------------
+
+-- Try to collect/claim anything already finished.
+for slot = 1, 3 do
+    local collectSuccess, collectResult = pcall(function()
+        return CollectWash:InvokeServer(slot)
+    end)
+
+    print(
+        "[AUTO WASH] Collect slot",
+        slot,
+        collectSuccess,
+        collectResult
+    )
+
+    task.wait(0.25)
+
+    local claimSuccess, claimResult = pcall(function()
+        return ClaimWashedItem:InvokeServer(slot)
+    end)
+
+    print(
+        "[AUTO WASH] Claim slot",
+        slot,
+        claimSuccess,
+        claimResult
+    )
+
+    task.wait(0.25)
+end
+
+--------------------------------------------------
+-- FIND DIRTY INVENTORY
+--------------------------------------------------
+
+task.wait(0.5)
+
+local dirtyItems = getDirtyItems()
+
+if #dirtyItems == 0 then
+    warn("[AUTO WASH] NO DIRTY ITEMS DETECTED")
+    return
+end
+
+--------------------------------------------------
+-- LOAD SLOTS 1-3
+--------------------------------------------------
+
+local itemIndex = 1
+
+for slot = 1, 3 do
+
+    local item = dirtyItems[itemIndex]
+
+    if not item then
+        print("[AUTO WASH] No more dirty items.")
+        break
+    end
+
+    print(
+        "[AUTO WASH] Starting slot",
+        slot,
+        "with UUID",
+        item.UUID
+    )
+
+    local success, result = pcall(function()
+        return StartWash:InvokeServer(
+            slot,
+            item.UUID,
+            "Inventory"
+        )
+    end)
+
+    print(
+        "[AUTO WASH] StartWash result:",
+        success,
+        result
+    )
+
+    if success then
+        itemIndex += 1
+    end
+
+    task.wait(0.5)
+end
+
+print("================================")
+print("AUTO WASH TEST FINISHED")
+print("================================")
