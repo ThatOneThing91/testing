@@ -1,0 +1,435 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Wash = ReplicatedStorage
+    :WaitForChild("Events")
+    :WaitForChild("Wash")
+
+local StartWash = Wash:WaitForChild("StartWash")
+local CollectWash = Wash:WaitForChild("CollectWash")
+local ClaimWashedItem = Wash:WaitForChild("ClaimWashedItem")
+local GetSlotState = Wash:WaitForChild("GetSlotState")
+local GetWashableItems = Wash:WaitForChild("GetWashableItems")
+
+--------------------------------------------------
+-- SETTINGS
+--------------------------------------------------
+
+local CHECK_INTERVAL = 0.5
+local running = true
+
+--------------------------------------------------
+-- DEBUG
+--------------------------------------------------
+
+local function log(...)
+    print("[AUTO WASH]", ...)
+end
+
+--------------------------------------------------
+-- FIND UUID IN RETURNED ITEM
+--------------------------------------------------
+
+local function getUUID(item, key)
+    if type(item) ~= "table" then
+        return nil
+    end
+
+    return item.UUID
+        or item.Uuid
+        or item.uuid
+        or item.Id
+        or item.ID
+        or item.ItemUUID
+        or item.ItemId
+        or item.UniqueId
+        or item.UniqueID
+        or (type(key) == "string" and key or nil)
+end
+
+--------------------------------------------------
+-- GET WASHABLE ITEMS
+--------------------------------------------------
+
+local function getWashableItems()
+
+    local success, result = pcall(function()
+        return GetWashableItems:InvokeServer()
+    end)
+
+    if not success then
+        warn("[AUTO WASH] GetWashableItems failed:", result)
+        return {}
+    end
+
+    if type(result) ~= "table" then
+        return {}
+    end
+
+    local items = {}
+    local seen = {}
+
+    local function scan(tbl, depth)
+
+        if depth > 6 then
+            return
+        end
+
+        for key, value in pairs(tbl) do
+
+            if type(value) == "table" then
+
+                local uuid = getUUID(value, key)
+
+                if uuid and not seen[uuid] then
+
+                    seen[uuid] = true
+
+                    table.insert(items, {
+                        UUID = uuid,
+                        Data = value
+                    })
+
+                end
+
+                scan(value, depth + 1)
+            end
+        end
+    end
+
+    scan(result, 0)
+
+    return items
+end
+
+--------------------------------------------------
+-- GET SLOT STATE
+--------------------------------------------------
+
+local function getSlotState(slot)
+
+    local success, result = pcall(function()
+        return GetSlotState:InvokeServer(slot)
+    end)
+
+    if success then
+        return result
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- STATE FINGERPRINT
+--------------------------------------------------
+
+local function fingerprint(value, depth)
+
+    depth = depth or 0
+
+    if depth > 5 then
+        return ""
+    end
+
+    if type(value) ~= "table" then
+        return tostring(value)
+    end
+
+    local parts = {}
+
+    for key, child in pairs(value) do
+
+        table.insert(
+            parts,
+            tostring(key) ..
+            "=" ..
+            fingerprint(child, depth + 1)
+        )
+
+    end
+
+    table.sort(parts)
+
+    return table.concat(parts, "|")
+end
+
+--------------------------------------------------
+-- RESERVED UUIDS
+--------------------------------------------------
+
+-- Prevent two slots from trying to load the same item.
+
+local reserved = {}
+
+local function getNextWashable()
+
+    local items = getWashableItems()
+
+    for _, item in ipairs(items) do
+
+        if item.UUID and not reserved[item.UUID] then
+
+            reserved[item.UUID] = true
+
+            return item
+        end
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- START ITEM
+--------------------------------------------------
+
+local function startItem(slot)
+
+    local item = getNextWashable()
+
+    if not item then
+        return nil
+    end
+
+    log(
+        "Slot",
+        slot,
+        "loading:",
+        item.UUID
+    )
+
+    local success, result = pcall(function()
+
+        return StartWash:InvokeServer(
+            slot,
+            item.UUID,
+            "Inventory"
+        )
+
+    end)
+
+    if success then
+
+        log(
+            "Slot",
+            slot,
+            "wash started"
+        )
+
+        return item.UUID
+
+    else
+
+        reserved[item.UUID] = nil
+
+        warn(
+            "[AUTO WASH] StartWash failed:",
+            slot,
+            result
+        )
+
+        return nil
+    end
+end
+
+--------------------------------------------------
+-- COLLECT
+--------------------------------------------------
+
+local function collect(slot)
+
+    local success, result = pcall(function()
+        return CollectWash:InvokeServer(slot)
+    end)
+
+    if success then
+
+        log(
+            "Slot",
+            slot,
+            "CollectWash sent"
+        )
+
+        return true
+    end
+
+    return false
+end
+
+--------------------------------------------------
+-- CLAIM
+--------------------------------------------------
+
+local function claim(slot)
+
+    local success, result = pcall(function()
+        return ClaimWashedItem:InvokeServer(slot)
+    end)
+
+    if success then
+
+        log(
+            "Slot",
+            slot,
+            "ClaimWashedItem sent"
+        )
+
+        return true
+    end
+
+    return false
+end
+
+--------------------------------------------------
+-- SLOT WORKER
+--------------------------------------------------
+
+local function runSlot(slot)
+
+    task.spawn(function()
+
+        log(
+            "Slot",
+            slot,
+            "worker started"
+        )
+
+        local currentUUID = nil
+        local previousState = nil
+
+        while running do
+
+            --------------------------------------------------
+            -- GET CURRENT STATE
+            --------------------------------------------------
+
+            local state = getSlotState(slot)
+
+            local stateID = fingerprint(state)
+
+            --------------------------------------------------
+            -- EMPTY / INITIAL SLOT
+            --------------------------------------------------
+
+            if not currentUUID then
+
+                currentUUID = startItem(slot)
+
+                if currentUUID then
+
+                    task.wait(0.5)
+
+                    state = getSlotState(slot)
+                    previousState = fingerprint(state)
+
+                else
+
+                    -- No dirty items currently available.
+                    task.wait(1)
+
+                end
+
+            else
+
+                --------------------------------------------------
+                -- WATCH FOR SLOT STATE CHANGE
+                --------------------------------------------------
+
+                if stateID ~= previousState then
+
+                    log(
+                        "Slot",
+                        slot,
+                        "state changed"
+                    )
+
+                    --------------------------------------------------
+                    -- TRY COLLECT
+                    --------------------------------------------------
+
+                    local collected = collect(slot)
+
+                    if collected then
+
+                        task.wait(0.25)
+
+                        --------------------------------------------------
+                        -- GET NEW STATE AFTER COLLECT
+                        --------------------------------------------------
+
+                        local afterCollect =
+                            getSlotState(slot)
+
+                        local afterCollectID =
+                            fingerprint(afterCollect)
+
+                        --------------------------------------------------
+                        -- TRY CLAIM
+                        --------------------------------------------------
+
+                        local claimed = claim(slot)
+
+                        if claimed then
+
+                            log(
+                                "Slot",
+                                slot,
+                                "claimed item"
+                            )
+
+                            reserved[currentUUID] = nil
+                            currentUUID = nil
+
+                            --------------------------------------------------
+                            -- IMMEDIATELY LOOK FOR NEXT ITEM
+                            --------------------------------------------------
+
+                            task.wait(0.25)
+
+                        else
+
+                            previousState =
+                                afterCollectID
+                        end
+
+                    else
+
+                        previousState =
+                            stateID
+                    end
+
+                end
+            end
+
+            --------------------------------------------------
+            -- UPDATE STATE
+            --------------------------------------------------
+
+            if currentUUID then
+
+                local newest =
+                    getSlotState(slot)
+
+                previousState =
+                    previousState
+                    or fingerprint(newest)
+
+            end
+
+            task.wait(CHECK_INTERVAL)
+        end
+
+    end)
+end
+
+--------------------------------------------------
+-- START ALL THREE
+--------------------------------------------------
+
+log("==============================")
+log("AUTO WASH STARTED")
+log("==============================")
+
+runSlot(1)
+runSlot(2)
+runSlot(3)
+
+log("Slots 1, 2, and 3 are running.")
