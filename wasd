@@ -1,0 +1,292 @@
+local RS = game:GetService("ReplicatedStorage")
+
+local Wash = RS:WaitForChild("Events"):WaitForChild("Wash")
+
+local GetWashableItems = Wash:WaitForChild("GetWashableItems")
+local GetSlotState = Wash:WaitForChild("GetSlotState")
+local StartWash = Wash:WaitForChild("StartWash")
+local CollectWash = Wash:WaitForChild("CollectWash")
+local ClaimWashedItem = Wash:WaitForChild("ClaimWashedItem")
+
+local running = true
+
+--------------------------------------------------
+-- UUID DETECTION
+--------------------------------------------------
+
+local function isUUID(value)
+    if type(value) ~= "string" then
+        return false
+    end
+
+    return value:match(
+        "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+    ) ~= nil
+end
+
+--------------------------------------------------
+-- FIND UUIDS RETURNED BY GETWASHABLEITEMS
+--------------------------------------------------
+
+local function getDirtyUUIDs()
+
+    local ok, result = pcall(function()
+        return GetWashableItems:InvokeServer()
+    end)
+
+    if not ok or type(result) ~= "table" then
+        return {}
+    end
+
+    local found = {}
+    local seen = {}
+
+    local function scan(value, key, depth)
+
+        depth = depth or 0
+
+        if depth > 8 then
+            return
+        end
+
+        -- UUID may be the table key
+        if isUUID(key) and not seen[key] then
+            seen[key] = true
+            table.insert(found, key)
+        end
+
+        -- UUID may be the value
+        if isUUID(value) and not seen[value] then
+            seen[value] = true
+            table.insert(found, value)
+            return
+        end
+
+        if type(value) == "table" then
+            for k, v in pairs(value) do
+                scan(v, k, depth + 1)
+            end
+        end
+    end
+
+    scan(result, nil, 0)
+
+    return found
+end
+
+--------------------------------------------------
+-- SLOT STATE
+--------------------------------------------------
+
+local function getState(slot)
+
+    local ok, result = pcall(function()
+        return GetSlotState:InvokeServer(slot)
+    end)
+
+    if ok then
+        return result
+    end
+
+    return nil
+end
+
+local function serialize(value, depth)
+
+    depth = depth or 0
+
+    if depth > 6 then
+        return ""
+    end
+
+    if type(value) ~= "table" then
+        return tostring(value)
+    end
+
+    local parts = {}
+
+    for key, child in pairs(value) do
+        table.insert(
+            parts,
+            tostring(key) .. "=" .. serialize(child, depth + 1)
+        )
+    end
+
+    table.sort(parts)
+
+    return table.concat(parts, "|")
+end
+
+--------------------------------------------------
+-- LOAD ITEM
+--------------------------------------------------
+
+local reserved = {}
+
+local function loadDirtyItem(slot)
+
+    local uuids = getDirtyUUIDs()
+
+    for _, uuid in ipairs(uuids) do
+
+        if not reserved[uuid] then
+
+            local before = serialize(getState(slot))
+
+            print(
+                "[AUTO WASH] Trying slot",
+                slot,
+                uuid
+            )
+
+            local ok, result = pcall(function()
+                return StartWash:InvokeServer(
+                    slot,
+                    uuid,
+                    "Inventory"
+                )
+            end)
+
+            if ok then
+
+                task.wait(0.5)
+
+                local after = serialize(getState(slot))
+
+                -- Don't trust InvokeServer alone.
+                -- Verify that the server changed the slot.
+                if after ~= before then
+
+                    reserved[uuid] = true
+
+                    print(
+                        "[AUTO WASH] Slot",
+                        slot,
+                        "LOADED:",
+                        uuid
+                    )
+
+                    return uuid
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- SLOT WORKER
+--------------------------------------------------
+
+local function runSlot(slot)
+
+    task.spawn(function()
+
+        local currentUUID = nil
+        local previousState = nil
+
+        while running do
+
+            --------------------------------------------------
+            -- EMPTY
+            --------------------------------------------------
+
+            if not currentUUID then
+
+                currentUUID = loadDirtyItem(slot)
+
+                if currentUUID then
+                    previousState = serialize(getState(slot))
+                else
+                    task.wait(1)
+                end
+
+            else
+
+                --------------------------------------------------
+                -- WATCH CURRENT WASH
+                --------------------------------------------------
+
+                local currentState = serialize(getState(slot))
+
+                if currentState ~= previousState then
+
+                    print(
+                        "[AUTO WASH] Slot",
+                        slot,
+                        "changed state"
+                    )
+
+                    --------------------------------------------------
+                    -- COLLECT
+                    --------------------------------------------------
+
+                    local collectOK = pcall(function()
+                        CollectWash:InvokeServer(slot)
+                    end)
+
+                    if collectOK then
+
+                        task.wait(0.25)
+
+                        local stateAfterCollect =
+                            serialize(getState(slot))
+
+                        --------------------------------------------------
+                        -- CLAIM
+                        --------------------------------------------------
+
+                        local claimOK = pcall(function()
+                            ClaimWashedItem:InvokeServer(slot)
+                        end)
+
+                        if claimOK then
+
+                            task.wait(0.25)
+
+                            local stateAfterClaim =
+                                serialize(getState(slot))
+
+                            -- Only consider it finished if
+                            -- the slot actually changed.
+                            if stateAfterClaim ~= stateAfterCollect then
+
+                                print(
+                                    "[AUTO WASH] Slot",
+                                    slot,
+                                    "CLAIMED"
+                                )
+
+                                reserved[currentUUID] = nil
+                                currentUUID = nil
+                                previousState = nil
+
+                            else
+
+                                previousState =
+                                    stateAfterCollect
+                            end
+
+                        end
+                    end
+
+                end
+            end
+
+            task.wait(0.35)
+        end
+    end)
+end
+
+--------------------------------------------------
+-- START 3 INDEPENDENT WORKERS
+--------------------------------------------------
+
+print("==============================")
+print("AUTO WASH STARTED")
+print("==============================")
+
+runSlot(1)
+runSlot(2)
+runSlot(3)
