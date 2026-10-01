@@ -1,0 +1,186 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Events = ReplicatedStorage:WaitForChild("Events")
+
+local GetPlayerInventory = Events
+    :WaitForChild("Inventory")
+    :WaitForChild("GetPlayerInventory")
+
+local RepairWithWrench = Events
+    :WaitForChild("WrenchShop")
+    :WaitForChild("RepairWithWrench")
+
+--==================================================
+-- SETTINGS
+--==================================================
+
+local running = true
+local SCAN_INTERVAL = 2
+
+--==================================================
+-- CHECK FOR BROKEN MUTATOR
+--==================================================
+
+local function hasBrokenMutator(value, depth)
+    depth = depth or 0
+
+    if depth > 8 then
+        return false
+    end
+
+    if typeof(value) == "string" then
+        return string.lower(value) == "broken"
+    end
+
+    if typeof(value) ~= "table" then
+        return false
+    end
+
+    for key, child in pairs(value) do
+
+        if typeof(key) == "string"
+            and string.lower(key) == "broken"
+            and child == true then
+
+            return true
+        end
+
+        if hasBrokenMutator(child, depth + 1) then
+            return true
+        end
+    end
+
+    return false
+end
+
+--==================================================
+-- FIND UUID
+--==================================================
+
+local function findUUID(item, fallbackKey)
+
+    if typeof(item) == "table" then
+
+        local possibleFields = {
+            "UUID",
+            "Uuid",
+            "uuid",
+            "ID",
+            "Id",
+            "id",
+            "ItemUUID",
+            "ItemUuid",
+            "itemUUID",
+            "UniqueId",
+            "UniqueID"
+        }
+
+        for _, field in ipairs(possibleFields) do
+
+            local value = item[field]
+
+            if typeof(value) == "string" and #value > 0 then
+                return value
+            end
+        end
+    end
+
+    if typeof(fallbackKey) == "string" then
+        return fallbackKey
+    end
+
+    return nil
+end
+
+--==================================================
+-- REPAIR ONE INVENTORY SCAN
+--==================================================
+
+local function repairBrokenItems()
+
+    local success, inventory = pcall(function()
+        return GetPlayerInventory:InvokeServer()
+    end)
+
+    if not success then
+        warn("[AUTO REPAIR] Failed to get inventory:", inventory)
+        return
+    end
+
+    if typeof(inventory) ~= "table" then
+        warn("[AUTO REPAIR] Inventory wasn't a table.")
+        return
+    end
+
+    local repairedThisScan = {}
+
+    local function scan(container)
+
+        if typeof(container) ~= "table" then
+            return
+        end
+
+        for key, item in pairs(container) do
+
+            if not running then
+                return
+            end
+
+            if typeof(item) == "table" then
+
+                if hasBrokenMutator(item) then
+
+                    local uuid = findUUID(item, key)
+
+                    if uuid and not repairedThisScan[uuid] then
+
+                        repairedThisScan[uuid] = true
+
+                        local repairSuccess, result = pcall(function()
+                            return RepairWithWrench:InvokeServer(uuid)
+                        end)
+
+                        if repairSuccess then
+                            print("[AUTO REPAIR] Repaired:", uuid)
+                        else
+                            warn(
+                                "[AUTO REPAIR] Repair failed:",
+                                uuid,
+                                result
+                            )
+                        end
+
+                        task.wait(0.1)
+                    end
+
+                else
+                    scan(item)
+                end
+            end
+        end
+    end
+
+    scan(inventory)
+end
+
+--==================================================
+-- AUTO REPAIR LOOP
+--==================================================
+
+print("[AUTO REPAIR] ON")
+
+task.spawn(function()
+
+    while running do
+
+        repairBrokenItems()
+
+        if not running then
+            break
+        end
+
+        task.wait(SCAN_INTERVAL)
+    end
+
+    print("[AUTO REPAIR] OFF")
+end)
