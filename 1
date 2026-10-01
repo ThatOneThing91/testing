@@ -1,0 +1,344 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Events = ReplicatedStorage:WaitForChild("Events")
+local Wash = Events:WaitForChild("Wash")
+local InventoryEvents = Events:WaitForChild("Inventory")
+
+local StartWash = Wash:WaitForChild("StartWash")
+local CollectWash = Wash:WaitForChild("CollectWash")
+local ClaimWashedItem = Wash:WaitForChild("ClaimWashedItem")
+
+local GetPlayerInventory = InventoryEvents:WaitForChild("GetPlayerInventory")
+
+--------------------------------------------------
+-- SETTINGS
+--------------------------------------------------
+
+-- Change this if the actual washing time is longer/shorter.
+local WASH_WAIT = 10
+
+--------------------------------------------------
+-- DEBUG
+--------------------------------------------------
+
+local function log(...)
+    print("[AUTO WASH TEST]", ...)
+end
+
+--------------------------------------------------
+-- FIND UUID
+--------------------------------------------------
+
+local function getUUID(item, key)
+    if type(item) ~= "table" then
+        return nil
+    end
+
+    return item.UUID
+        or item.Uuid
+        or item.uuid
+        or item.Id
+        or item.ID
+        or item.ItemUUID
+        or item.ItemId
+        or (type(key) == "string" and key or nil)
+end
+
+--------------------------------------------------
+-- DIRTY DETECTION
+--------------------------------------------------
+
+local function containsDirty(value, depth, visited)
+    depth = depth or 0
+    visited = visited or {}
+
+    if depth > 8 then
+        return false
+    end
+
+    if type(value) == "string" then
+        return string.find(
+            string.lower(value),
+            "dirty",
+            1,
+            true
+        ) ~= nil
+    end
+
+    if type(value) ~= "table" then
+        return false
+    end
+
+    if visited[value] then
+        return false
+    end
+
+    visited[value] = true
+
+    for key, child in pairs(value) do
+
+        if type(key) == "string" then
+            local lowerKey = string.lower(key)
+
+            if string.find(lowerKey, "dirty", 1, true) then
+                if child ~= false and child ~= nil then
+                    return true
+                end
+            end
+        end
+
+        if containsDirty(child, depth + 1, visited) then
+            return true
+        end
+    end
+
+    return false
+end
+
+--------------------------------------------------
+-- GET DIRTY ITEMS
+--------------------------------------------------
+
+local function getDirtyItems()
+
+    log("Getting inventory...")
+
+    local success, inventory = pcall(function()
+        return GetPlayerInventory:InvokeServer()
+    end)
+
+    if not success then
+        warn("[AUTO WASH TEST] Failed to get inventory:", inventory)
+        return {}
+    end
+
+    if type(inventory) ~= "table" then
+        warn("[AUTO WASH TEST] Inventory result isn't a table.")
+        return {}
+    end
+
+    local dirtyItems = {}
+    local seen = {}
+
+    local function scan(tbl, depth)
+
+        if depth > 7 then
+            return
+        end
+
+        for key, value in pairs(tbl) do
+
+            if type(value) == "table" then
+
+                local uuid = getUUID(value, key)
+
+                if uuid
+                    and not seen[uuid]
+                    and containsDirty(value) then
+
+                    seen[uuid] = true
+
+                    table.insert(dirtyItems, {
+                        UUID = uuid,
+                        Data = value
+                    })
+
+                    log(
+                        "Dirty item found:",
+                        uuid
+                    )
+                end
+
+                scan(value, depth + 1)
+            end
+        end
+    end
+
+    scan(inventory, 0)
+
+    log("Total dirty items:", #dirtyItems)
+
+    return dirtyItems
+end
+
+--------------------------------------------------
+-- START ONE SLOT
+--------------------------------------------------
+
+local function startSlot(slot, uuid)
+
+    log(
+        "Starting slot",
+        slot,
+        "UUID:",
+        uuid
+    )
+
+    local success, result = pcall(function()
+
+        return StartWash:InvokeServer(
+            slot,
+            uuid,
+            "Inventory"
+        )
+
+    end)
+
+    log(
+        "Slot",
+        slot,
+        "StartWash:",
+        success,
+        result
+    )
+
+    return success
+end
+
+--------------------------------------------------
+-- COLLECT ONE SLOT
+--------------------------------------------------
+
+local function collectSlot(slot)
+
+    log(
+        "Collecting slot",
+        slot
+    )
+
+    local success, result = pcall(function()
+        return CollectWash:InvokeServer(slot)
+    end)
+
+    log(
+        "Slot",
+        slot,
+        "CollectWash:",
+        success,
+        result
+    )
+
+    return success
+end
+
+--------------------------------------------------
+-- CLAIM ONE SLOT
+--------------------------------------------------
+
+local function claimSlot(slot)
+
+    log(
+        "Claiming slot",
+        slot
+    )
+
+    local success, result = pcall(function()
+        return ClaimWashedItem:InvokeServer(slot)
+    end)
+
+    log(
+        "Slot",
+        slot,
+        "ClaimWashedItem:",
+        success,
+        result
+    )
+
+    return success
+end
+
+--------------------------------------------------
+-- MAIN TEST
+--------------------------------------------------
+
+log("==============================")
+log("3 SLOT AUTO WASH TEST")
+log("==============================")
+
+local dirtyItems = getDirtyItems()
+
+if #dirtyItems == 0 then
+    warn("[AUTO WASH TEST] No dirty items detected.")
+    return
+end
+
+--------------------------------------------------
+-- START SLOTS 1, 2, 3
+--------------------------------------------------
+
+local loadedSlots = {}
+
+for slot = 1, 3 do
+
+    local item = dirtyItems[slot]
+
+    if item then
+
+        local success = startSlot(
+            slot,
+            item.UUID
+        )
+
+        if success then
+            loadedSlots[slot] = true
+        end
+
+        task.wait(0.5)
+
+    else
+
+        log(
+            "Not enough dirty items for slot",
+            slot
+        )
+
+    end
+end
+
+--------------------------------------------------
+-- WAIT FOR WASHING
+--------------------------------------------------
+
+log(
+    "All available slots loaded."
+)
+
+log(
+    "Waiting",
+    WASH_WAIT,
+    "seconds..."
+)
+
+task.wait(WASH_WAIT)
+
+--------------------------------------------------
+-- COLLECT SLOTS 1, 2, 3
+--------------------------------------------------
+
+for slot = 1, 3 do
+
+    if loadedSlots[slot] then
+        collectSlot(slot)
+        task.wait(0.5)
+    end
+
+end
+
+--------------------------------------------------
+-- CLAIM SLOTS 1, 2, 3
+--------------------------------------------------
+
+for slot = 1, 3 do
+
+    if loadedSlots[slot] then
+        claimSlot(slot)
+        task.wait(0.5)
+    end
+
+end
+
+--------------------------------------------------
+
+log("==============================")
+log("TEST COMPLETE")
+log("==============================")
