@@ -1,0 +1,280 @@
+--====================================================
+-- STORAGE HUNTERS - AUTO REPAIR WITH WRENCH
+-- Scans inventory for broken items
+-- Repairs them using RepairWithWrench
+--====================================================
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Events = ReplicatedStorage:WaitForChild("Events")
+
+local Inventory = Events:WaitForChild("Inventory")
+local WrenchShop = Events:WaitForChild("WrenchShop")
+
+local GetPlayerInventory =
+    Inventory:WaitForChild("GetPlayerInventory")
+
+local RepairWithWrench =
+    WrenchShop:WaitForChild("RepairWithWrench")
+
+--====================================================
+-- SETTINGS
+--====================================================
+
+local SCAN_DELAY = 0.75
+local REPAIR_DELAY = 0.15
+
+-- Running copy protection
+_G.StorageHuntersWrenchRepairRunId =
+    (_G.StorageHuntersWrenchRepairRunId or 0) + 1
+
+local RUN_ID =
+    _G.StorageHuntersWrenchRepairRunId
+
+print("[AUTO REPAIR] Wrench repair started")
+
+--====================================================
+-- RECURSIVE BROKEN DETECTION
+--====================================================
+
+local function isBroken(value, depth)
+
+    depth = depth or 0
+
+    if depth > 6 then
+        return false
+    end
+
+    if type(value) ~= "table" then
+        return false
+    end
+
+    for key, data in pairs(value) do
+
+        local keyName =
+            tostring(key):lower()
+
+        -- Broken = true
+        if keyName == "broken"
+            and data == true
+        then
+            return true
+        end
+
+        -- Condition = "Broken"
+        if (
+            keyName == "condition"
+            or keyName == "status"
+            or keyName == "state"
+        )
+            and type(data) == "string"
+            and data:lower() == "broken"
+        then
+            return true
+        end
+
+        -- Mutator named Broken
+        if type(data) == "string"
+            and data:lower() == "broken"
+        then
+            return true
+        end
+
+        -- Search nested tables
+        if type(data) == "table" then
+
+            if isBroken(data, depth + 1) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+--====================================================
+-- FIND GUID
+--====================================================
+
+local function getGuid(item)
+
+    if type(item) ~= "table" then
+        return nil
+    end
+
+    return
+        item.guid
+        or item.GUID
+        or item.Guid
+        or item.uuid
+        or item.UUID
+        or item.Uuid
+        or item.id
+        or item.ID
+end
+
+--====================================================
+-- GET INVENTORY
+--====================================================
+
+local function getInventory()
+
+    local ok, result = pcall(function()
+        return GetPlayerInventory:InvokeServer()
+    end)
+
+    if not ok then
+
+        warn(
+            "[AUTO REPAIR] Inventory request failed:",
+            result
+        )
+
+        return nil
+    end
+
+    return result
+end
+
+--====================================================
+-- COLLECT BROKEN ITEMS
+--====================================================
+
+local function findBrokenItems(inventory)
+
+    local found = {}
+    local seen = {}
+
+    local function scan(value, depth)
+
+        depth = depth or 0
+
+        if depth > 7 then
+            return
+        end
+
+        if type(value) ~= "table" then
+            return
+        end
+
+        local guid =
+            getGuid(value)
+
+        if guid
+            and not seen[guid]
+            and isBroken(value)
+        then
+
+            seen[guid] = true
+
+            table.insert(
+                found,
+                {
+                    guid = guid,
+                    data = value
+                }
+            )
+
+            return
+        end
+
+        for _, child in pairs(value) do
+
+            if type(child) == "table" then
+                scan(child, depth + 1)
+            end
+        end
+    end
+
+    scan(inventory)
+
+    return found
+end
+
+--====================================================
+-- REPAIR ONE ITEM
+--====================================================
+
+local function repairItem(guid)
+
+    if not guid then
+        return false
+    end
+
+    local ok, result = pcall(function()
+
+        return RepairWithWrench:InvokeServer(
+            guid
+        )
+
+    end)
+
+    if not ok then
+
+        warn(
+            "[AUTO REPAIR] Repair failed:",
+            guid,
+            result
+        )
+
+        return false
+    end
+
+    print(
+        "[AUTO REPAIR] Repaired:",
+        guid
+    )
+
+    return true
+end
+
+--====================================================
+-- MAIN LOOP
+--====================================================
+
+task.spawn(function()
+
+    while
+        _G.StorageHuntersWrenchRepairRunId
+            == RUN_ID
+    do
+
+        local inventory =
+            getInventory()
+
+        if inventory then
+
+            local brokenItems =
+                findBrokenItems(inventory)
+
+            if #brokenItems > 0 then
+
+                print(
+                    "[AUTO REPAIR] Found",
+                    #brokenItems,
+                    "broken item(s)"
+                )
+
+                for _, item in ipairs(brokenItems) do
+
+                    -- Stop immediately if another
+                    -- copy of the script was started.
+                    if
+                        _G.StorageHuntersWrenchRepairRunId
+                        ~= RUN_ID
+                    then
+                        return
+                    end
+
+                    repairItem(
+                        item.guid
+                    )
+
+                    task.wait(REPAIR_DELAY)
+                end
+            end
+        end
+
+        task.wait(SCAN_DELAY)
+    end
+end)
