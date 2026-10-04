@@ -1,0 +1,839 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+--------------------------------------------------
+-- REMOTES
+--------------------------------------------------
+
+local Wash = ReplicatedStorage
+    :WaitForChild("Events")
+    :WaitForChild("Wash")
+
+local StartWash = Wash:WaitForChild("StartWash")
+local CollectWash = Wash:WaitForChild("CollectWash")
+local ClaimWashedItem = Wash:WaitForChild("ClaimWashedItem")
+local GetSlotState = Wash:WaitForChild("GetSlotState")
+local GetWashableItems = Wash:WaitForChild("GetWashableItems")
+
+--------------------------------------------------
+-- SETTINGS
+--------------------------------------------------
+
+local running = true
+
+local CHECK_INTERVAL = 0.5
+local START_DELAY = 1
+local CLAIM_DELAY = 0.5
+
+--------------------------------------------------
+-- LOG
+--------------------------------------------------
+
+local function log(...)
+    print("[AUTO WASH]", ...)
+end
+
+--------------------------------------------------
+-- GUID DETECTION
+--------------------------------------------------
+
+local function looksLikeGUID(value)
+    if type(value) ~= "string" then
+        return false
+    end
+
+    return value:match(
+        "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+    ) ~= nil
+end
+
+local GUID_KEYS = {
+    "UUID",
+    "Uuid",
+    "uuid",
+
+    "GUID",
+    "Guid",
+    "guid",
+
+    "ItemUUID",
+    "ItemUuid",
+    "itemUUID",
+    "itemUuid",
+
+    "ItemGUID",
+    "ItemGuid",
+    "itemGUID",
+    "itemGuid",
+
+    "UniqueId",
+    "UniqueID",
+
+    "Id",
+    "ID",
+    "id"
+}
+
+local function findGUID(tbl, tableKey)
+    if looksLikeGUID(tableKey) then
+        return tableKey
+    end
+
+    if type(tbl) ~= "table" then
+        if looksLikeGUID(tbl) then
+            return tbl
+        end
+
+        return nil
+    end
+
+    for _, key in ipairs(GUID_KEYS) do
+        local value = tbl[key]
+
+        if looksLikeGUID(value) then
+            return value
+        end
+    end
+
+    for _, value in pairs(tbl) do
+        if looksLikeGUID(value) then
+            return value
+        end
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- GET WASHABLE GUIDS
+--------------------------------------------------
+
+local function getWashableGUIDs()
+    local success, result = pcall(function()
+        return GetWashableItems:InvokeServer()
+    end)
+
+    if not success then
+        warn(
+            "[AUTO WASH] GetWashableItems ERROR:",
+            result
+        )
+
+        return {}
+    end
+
+    if type(result) ~= "table" then
+        warn(
+            "[AUTO WASH] GetWashableItems returned",
+            typeof(result)
+        )
+
+        return {}
+    end
+
+    local guids = {}
+    local seen = {}
+
+    local function addGUID(guid)
+        if guid and not seen[guid] then
+            seen[guid] = true
+            table.insert(guids, guid)
+        end
+    end
+
+    local function scan(tbl, depth)
+        if type(tbl) ~= "table" then
+            return
+        end
+
+        if depth > 7 then
+            return
+        end
+
+        for key, value in pairs(tbl) do
+
+            if looksLikeGUID(key) then
+                addGUID(key)
+            end
+
+            if type(value) == "table" then
+
+                local guid = findGUID(value, key)
+
+                if guid then
+                    addGUID(guid)
+                end
+
+                scan(
+                    value,
+                    depth + 1
+                )
+
+            elseif looksLikeGUID(value) then
+
+                addGUID(value)
+
+            end
+        end
+    end
+
+    scan(result, 0)
+
+    log(
+        "GetWashableItems found",
+        #guids,
+        "item(s)"
+    )
+
+    return guids
+end
+
+--------------------------------------------------
+-- RESERVED GUIDS
+--------------------------------------------------
+
+local reserved = {}
+
+local function getNextWashable()
+    local guids = getWashableGUIDs()
+
+    for _, guid in ipairs(guids) do
+        if not reserved[guid] then
+
+            reserved[guid] = true
+
+            log(
+                "Reserved:",
+                guid
+            )
+
+            return guid
+        end
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- SLOT STATE
+--------------------------------------------------
+
+local function getSlotState(slot)
+    local success, result = pcall(function()
+        return GetSlotState:InvokeServer(slot)
+    end)
+
+    if success then
+        return result
+    end
+
+    warn(
+        "[AUTO WASH] GetSlotState failed:",
+        slot,
+        result
+    )
+
+    return nil
+end
+
+--------------------------------------------------
+-- FINGERPRINT SLOT STATE
+--------------------------------------------------
+
+local function fingerprint(value, depth)
+    depth = depth or 0
+
+    if depth > 6 then
+        return ""
+    end
+
+    if type(value) ~= "table" then
+        return tostring(value)
+    end
+
+    local parts = {}
+
+    for key, child in pairs(value) do
+        table.insert(
+            parts,
+            tostring(key)
+                .. "="
+                .. fingerprint(
+                    child,
+                    depth + 1
+                )
+        )
+    end
+
+    table.sort(parts)
+
+    return table.concat(parts, "|")
+end
+
+--------------------------------------------------
+-- SEARCH STATE
+--------------------------------------------------
+
+local function findField(tbl, names, depth)
+    depth = depth or 0
+
+    if type(tbl) ~= "table" then
+        return nil
+    end
+
+    if depth > 7 then
+        return nil
+    end
+
+    for key, value in pairs(tbl) do
+
+        local lower =
+            string.lower(
+                tostring(key)
+            )
+
+        for _, wanted in ipairs(names) do
+            if lower == wanted then
+                return value
+            end
+        end
+
+        if type(value) == "table" then
+
+            local result =
+                findField(
+                    value,
+                    names,
+                    depth + 1
+                )
+
+            if result ~= nil then
+                return result
+            end
+        end
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- DETECT FINISHED WASH
+--------------------------------------------------
+
+local function washFinished(state)
+    if type(state) ~= "table" then
+        return false
+    end
+
+    --------------------------------------------------
+    -- BOOLEAN
+    --------------------------------------------------
+
+    local complete = findField(
+        state,
+        {
+            "finished",
+            "complete",
+            "completed",
+            "done",
+            "ready",
+
+            "isfinished",
+            "iscomplete",
+            "iscompleted",
+            "isdone",
+            "isready"
+        }
+    )
+
+    if complete == true then
+        return true
+    end
+
+    --------------------------------------------------
+    -- STATUS STRING
+    --------------------------------------------------
+
+    local status = findField(
+        state,
+        {
+            "status",
+            "state",
+            "washstate"
+        }
+    )
+
+    if type(status) == "string" then
+
+        local text =
+            string.lower(status)
+
+        if text:find("finish")
+        or text:find("complete")
+        or text == "done"
+        or text == "ready"
+        or text:find("collect") then
+
+            return true
+        end
+    end
+
+    --------------------------------------------------
+    -- TIME REMAINING
+    --------------------------------------------------
+
+    local remaining = findField(
+        state,
+        {
+            "remaining",
+            "remainingtime",
+            "timeremaining",
+            "timeleft",
+            "secondsremaining"
+        }
+    )
+
+    if type(remaining) == "number"
+        and remaining <= 0 then
+
+        return true
+    end
+
+    --------------------------------------------------
+    -- FINISH TIMESTAMP
+    --------------------------------------------------
+
+    local finishTime = findField(
+        state,
+        {
+            "finishtime",
+            "endtime",
+            "completiontime"
+        }
+    )
+
+    if type(finishTime) == "number"
+        and finishTime > 1000000000
+        and os.time() >= finishTime then
+
+        return true
+    end
+
+    return false
+end
+
+--------------------------------------------------
+-- START WASH
+--------------------------------------------------
+
+local function startWash(slot, guid)
+    log(
+        "Slot",
+        slot,
+        "sending StartWash:",
+        guid
+    )
+
+    local success, result = pcall(function()
+
+        return StartWash:InvokeServer(
+            slot,
+            guid,
+            "Inventory",
+            nil
+        )
+
+    end)
+
+    if not success then
+
+        warn(
+            "[AUTO WASH] Slot",
+            slot,
+            "StartWash ERROR:",
+            result
+        )
+
+        return false
+    end
+
+    if result == false then
+
+        warn(
+            "[AUTO WASH] Slot",
+            slot,
+            "StartWash rejected"
+        )
+
+        return false
+    end
+
+    --------------------------------------------------
+    -- DO NOT IMMEDIATELY START NEXT SLOT
+    --------------------------------------------------
+
+    task.wait(START_DELAY)
+
+    log(
+        "Slot",
+        slot,
+        "StartWash sent successfully"
+    )
+
+    return true
+end
+
+--------------------------------------------------
+-- COLLECT
+--------------------------------------------------
+
+local function collectWash(slot)
+    log(
+        "Slot",
+        slot,
+        "sending CollectWash"
+    )
+
+    local success, result = pcall(function()
+
+        return CollectWash:InvokeServer(
+            slot
+        )
+
+    end)
+
+    if not success then
+        return false
+    end
+
+    if result == false then
+        return false
+    end
+
+    log(
+        "Slot",
+        slot,
+        "CollectWash accepted"
+    )
+
+    return true
+end
+
+--------------------------------------------------
+-- CLAIM
+--------------------------------------------------
+
+local function claimWashedItem(slot)
+    log(
+        "Slot",
+        slot,
+        "sending ClaimWashedItem"
+    )
+
+    local success, result = pcall(function()
+
+        return ClaimWashedItem:InvokeServer(
+            slot
+        )
+
+    end)
+
+    if not success then
+        return false
+    end
+
+    if result == false then
+        return false
+    end
+
+    log(
+        "Slot",
+        slot,
+        "ClaimWashedItem accepted"
+    )
+
+    return true
+end
+
+--------------------------------------------------
+-- WAIT UNTIL FINISHED
+--------------------------------------------------
+
+local function waitUntilFinished(slot)
+    log(
+        "Slot",
+        slot,
+        "waiting for wash to finish"
+    )
+
+    while running do
+
+        local state =
+            getSlotState(slot)
+
+        if washFinished(state) then
+
+            log(
+                "Slot",
+                slot,
+                "wash FINISHED"
+            )
+
+            return true
+        end
+
+        task.wait(CHECK_INTERVAL)
+    end
+
+    return false
+end
+
+--------------------------------------------------
+-- COMPLETE SLOT CYCLE
+--------------------------------------------------
+
+local function processLoadedSlot(slot, guid)
+
+    --------------------------------------------------
+    -- WAIT
+    --------------------------------------------------
+
+    if not waitUntilFinished(slot) then
+        return
+    end
+
+    --------------------------------------------------
+    -- COLLECT
+    --------------------------------------------------
+
+    local collected = false
+
+    while running and not collected do
+
+        collected =
+            collectWash(slot)
+
+        if not collected then
+            task.wait(0.5)
+        end
+    end
+
+    if not running then
+        return
+    end
+
+    --------------------------------------------------
+    -- SERVER TRANSITION
+    --------------------------------------------------
+
+    task.wait(CLAIM_DELAY)
+
+    --------------------------------------------------
+    -- CLAIM
+    --------------------------------------------------
+
+    local claimed = false
+
+    while running and not claimed do
+
+        claimed =
+            claimWashedItem(slot)
+
+        if not claimed then
+            task.wait(0.5)
+        end
+    end
+
+    if claimed then
+
+        log(
+            "Slot",
+            slot,
+            "FULL CYCLE COMPLETE"
+        )
+
+    end
+
+    reserved[guid] = nil
+end
+
+--------------------------------------------------
+-- SLOT WORKER
+--------------------------------------------------
+
+local function slotWorker(slot, firstGUID)
+
+    task.spawn(function()
+
+        local guid = firstGUID
+
+        while running do
+
+            --------------------------------------------------
+            -- PROCESS CURRENT ITEM
+            --------------------------------------------------
+
+            if guid then
+
+                processLoadedSlot(
+                    slot,
+                    guid
+                )
+
+                guid = nil
+            end
+
+            if not running then
+                break
+            end
+
+            --------------------------------------------------
+            -- GET NEW WASHABLE ITEM
+            --------------------------------------------------
+
+            guid =
+                getNextWashable()
+
+            if not guid then
+
+                log(
+                    "Slot",
+                    slot,
+                    "waiting for dirty item"
+                )
+
+                task.wait(1)
+                continue
+            end
+
+            --------------------------------------------------
+            -- START NEXT ITEM
+            --------------------------------------------------
+
+            local started =
+                startWash(
+                    slot,
+                    guid
+                )
+
+            if not started then
+
+                reserved[guid] = nil
+                guid = nil
+
+                task.wait(1)
+            end
+        end
+    end)
+end
+
+--------------------------------------------------
+-- INITIAL LOAD
+--
+-- IMPORTANT:
+-- Slots are loaded ONE AT A TIME.
+--------------------------------------------------
+
+local initialGUIDs = {}
+
+local function initialLoad()
+
+    log("==============================")
+    log("INITIAL WASHER LOAD")
+    log("==============================")
+
+    for slot = 1, 3 do
+
+        if not running then
+            return
+        end
+
+        --------------------------------------------------
+        -- REFRESH GETWASHABLEITEMS
+        -- BEFORE EVERY SLOT
+        --------------------------------------------------
+
+        local guid =
+            getNextWashable()
+
+        if not guid then
+
+            log(
+                "No dirty item available for slot",
+                slot
+            )
+
+            initialGUIDs[slot] = nil
+
+        else
+
+            --------------------------------------------------
+            -- START THIS SLOT
+            --------------------------------------------------
+
+            local started =
+                startWash(
+                    slot,
+                    guid
+                )
+
+            if started then
+
+                initialGUIDs[slot] =
+                    guid
+
+                log(
+                    "Slot",
+                    slot,
+                    "LOADED:",
+                    guid
+                )
+
+            else
+
+                reserved[guid] = nil
+
+                initialGUIDs[slot] =
+                    nil
+            end
+        end
+
+        --------------------------------------------------
+        -- GIVE SERVER EXTRA TIME TO REMOVE ITEM
+        -- FROM GETWASHABLEITEMS BEFORE NEXT SLOT
+        --------------------------------------------------
+
+        task.wait(1)
+    end
+end
+
+--------------------------------------------------
+-- START
+--------------------------------------------------
+
+log("================================")
+log("AUTO WASH TEST STARTING")
+log("Slots: 1, 2, 3")
+log("================================")
+
+--------------------------------------------------
+-- LOAD 1 -> 2 -> 3
+--------------------------------------------------
+
+initialLoad()
+
+--------------------------------------------------
+-- NOW START INDEPENDENT WORKERS
+--------------------------------------------------
+
+for slot = 1, 3 do
+
+    slotWorker(
+        slot,
+        initialGUIDs[slot]
+    )
+
+end
+
+log("================================")
+log("ALL SLOT WORKERS RUNNING")
+log("================================")
