@@ -1,0 +1,413 @@
+--====================================================
+-- STORAGE HUNTERS - STANDALONE AUTO REPAIR
+-- 3-slot automatic repair loop
+--====================================================
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Events = ReplicatedStorage:WaitForChild("Events")
+local Repair = Events:WaitForChild("Repair")
+
+local GetSlotState = Repair:WaitForChild("GetSlotState")
+local GetRepairableItems = Repair:WaitForChild("GetRepairableItems")
+local StartRepair = Repair:WaitForChild("StartRepair")
+local CollectRepair = Repair:WaitForChild("CollectRepair")
+local ClaimRepairedItem = Repair:WaitForChild("ClaimRepairedItem")
+
+-- Kill older copy when script is rerun
+_G.StorageHuntersAutoRepairRunId =
+    (_G.StorageHuntersAutoRepairRunId or 0) + 1
+
+local RUN_ID = _G.StorageHuntersAutoRepairRunId
+
+local LOOP_DELAY = 1
+local ACTION_DELAY = 0.35
+
+print("[AUTO REPAIR] Started")
+
+--====================================================
+-- REMOTE HELPERS
+--====================================================
+
+local function getSlotState()
+
+    local ok, result = pcall(function()
+        return GetSlotState:InvokeServer()
+    end)
+
+    if not ok then
+        warn(
+            "[AUTO REPAIR] GetSlotState failed:",
+            result
+        )
+
+        return nil
+    end
+
+    return result
+end
+
+
+local function getRepairableItems()
+
+    local ok, result = pcall(function()
+        return GetRepairableItems:InvokeServer()
+    end)
+
+    if not ok then
+        warn(
+            "[AUTO REPAIR] GetRepairableItems failed:",
+            result
+        )
+
+        return {}
+    end
+
+    if type(result) ~= "table" then
+        return {}
+    end
+
+    return result.items or {}
+end
+
+--====================================================
+-- ITEM SELECTION
+--====================================================
+
+local function chooseItem(items, usedGuids)
+
+    if type(items) ~= "table" then
+        return nil
+    end
+
+    for _, item in ipairs(items) do
+
+        local guid = item.guid
+
+        if guid and not usedGuids[guid] then
+            return item
+        end
+    end
+
+    return nil
+end
+
+--====================================================
+-- START REPAIR
+--====================================================
+
+local function startItem(slotIndex, item)
+
+    if not item or not item.guid then
+        return false
+    end
+
+    print(
+        "[AUTO REPAIR] Loading slot",
+        slotIndex,
+        item.guid,
+        item.source,
+        item.vehicleGUID
+    )
+
+    local ok, result = pcall(function()
+
+        return StartRepair:InvokeServer(
+            slotIndex,
+            item.guid,
+            item.source,
+            item.vehicleGUID
+        )
+
+    end)
+
+    if not ok then
+
+        warn(
+            "[AUTO REPAIR] StartRepair failed on slot",
+            slotIndex,
+            result
+        )
+
+        return false
+    end
+
+    print(
+        "[AUTO REPAIR] Slot",
+        slotIndex,
+        "started"
+    )
+
+    return true
+end
+
+--====================================================
+-- COLLECT REPAIR
+--====================================================
+
+local function collectSlot(slotIndex)
+
+    print(
+        "[AUTO REPAIR] Collecting slot",
+        slotIndex
+    )
+
+    local ok, result = pcall(function()
+
+        return CollectRepair:InvokeServer(
+            slotIndex
+        )
+
+    end)
+
+    if not ok then
+
+        warn(
+            "[AUTO REPAIR] CollectRepair failed on slot",
+            slotIndex,
+            result
+        )
+
+        return false
+    end
+
+    print(
+        "[AUTO REPAIR] Slot",
+        slotIndex,
+        "collected"
+    )
+
+    return true
+end
+
+--====================================================
+-- CLAIM REPAIRED ITEM
+--====================================================
+
+local function claimSlot(slotIndex)
+
+    print(
+        "[AUTO REPAIR] Claiming slot",
+        slotIndex
+    )
+
+    local ok, result = pcall(function()
+
+        return ClaimRepairedItem:InvokeServer(
+            slotIndex
+        )
+
+    end)
+
+    if not ok then
+
+        warn(
+            "[AUTO REPAIR] ClaimRepairedItem failed on slot",
+            slotIndex,
+            result
+        )
+
+        return false
+    end
+
+    if type(result) == "table"
+        and result.success == false
+    then
+
+        warn(
+            "[AUTO REPAIR] Claim rejected on slot",
+            slotIndex
+        )
+
+        return false
+    end
+
+    print(
+        "[AUTO REPAIR] Slot",
+        slotIndex,
+        "claimed"
+    )
+
+    return true
+end
+
+--====================================================
+-- PROCESS REPAIR STATION
+--====================================================
+
+local function processRepair()
+
+    local state = getSlotState()
+
+    if type(state) ~= "table" then
+        return
+    end
+
+    local unlockedCount =
+        tonumber(state.unlockedCount) or 1
+
+    unlockedCount =
+        math.clamp(
+            unlockedCount,
+            1,
+            3
+        )
+
+    local slots = state.slots
+
+    if type(slots) ~= "table" then
+        return
+    end
+
+    local usedGuids = {}
+
+    --================================================
+    -- PASS 1
+    -- Handle existing slots first.
+    --================================================
+
+    for slotIndex = 1, unlockedCount do
+
+        local slotData =
+            slots[tostring(slotIndex)]
+            or slots[slotIndex]
+
+        if slotData then
+
+            -- Some versions may expose a repaired/completed
+            -- flag after CollectRepair.
+            local finished =
+                slotData.Repaired == true
+                or slotData.Completed == true
+                or slotData.Ready == true
+
+            if finished then
+
+                claimSlot(slotIndex)
+
+                task.wait(ACTION_DELAY)
+
+            else
+
+                local now =
+                    workspace:GetServerTimeNow()
+
+                local startTime =
+                    tonumber(slotData.StartTime)
+                    or now
+
+                local duration =
+                    tonumber(slotData.Duration)
+                    or 0
+
+                local elapsed =
+                    now - startTime
+
+                local remaining =
+                    duration - elapsed
+
+                if remaining <= 0 then
+
+                    collectSlot(slotIndex)
+
+                    task.wait(ACTION_DELAY)
+                end
+            end
+        end
+    end
+
+    -- Let server update slot states
+    task.wait(0.4)
+
+    --================================================
+    -- PASS 2
+    -- Re-read slots after collect/claim.
+    --================================================
+
+    state = getSlotState()
+
+    if type(state) ~= "table"
+        or type(state.slots) ~= "table"
+    then
+        return
+    end
+
+    slots = state.slots
+
+    unlockedCount =
+        math.clamp(
+            tonumber(state.unlockedCount)
+                or unlockedCount,
+            1,
+            3
+        )
+
+    --================================================
+    -- PASS 3
+    -- Fill every empty slot.
+    --================================================
+
+    for slotIndex = 1, unlockedCount do
+
+        local slotData =
+            slots[tostring(slotIndex)]
+            or slots[slotIndex]
+
+        if not slotData then
+
+            -- Refresh repairable items separately
+            -- for each slot.
+            local repairableItems =
+                getRepairableItems()
+
+            local item =
+                chooseItem(
+                    repairableItems,
+                    usedGuids
+                )
+
+            if item then
+
+                usedGuids[item.guid] = true
+
+                local started =
+                    startItem(
+                        slotIndex,
+                        item
+                    )
+
+                if started then
+                    task.wait(0.5)
+                end
+            end
+        end
+    end
+end
+
+--====================================================
+-- MAIN LOOP
+--====================================================
+
+task.spawn(function()
+
+    while
+        _G.StorageHuntersAutoRepairRunId
+            == RUN_ID
+    do
+
+        local ok, err =
+            pcall(processRepair)
+
+        if not ok then
+
+            warn(
+                "[AUTO REPAIR] Loop error:",
+                err
+            )
+        end
+
+        task.wait(LOOP_DELAY)
+    end
+
+    print("[AUTO REPAIR] Stopped")
+end)
