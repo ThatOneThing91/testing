@@ -1,0 +1,952 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+--------------------------------------------------
+-- AUTO WASH
+-- NOTIFICATION-DRIVEN TEST
+--
+-- FLOW:
+--
+-- GetWashableItems
+--      ↓
+-- StartWash slots 1 / 2 / 3
+--      ↓
+-- Listen for:
+-- "Cleaning complete!"
+--      ↓
+-- Check active slots with CollectWash
+--      ↓
+-- Successful slot = finished washer
+--      ↓
+-- Wait 3 seconds
+--      ↓
+-- ClaimWashedItem
+--      ↓
+-- Refill same slot
+--------------------------------------------------
+
+local Events = ReplicatedStorage:WaitForChild("Events")
+
+local Wash = Events:WaitForChild("Wash")
+local UI = Events:WaitForChild("UI")
+
+local StartWash =
+    Wash:WaitForChild("StartWash")
+
+local CollectWash =
+    Wash:WaitForChild("CollectWash")
+
+local ClaimWashedItem =
+    Wash:WaitForChild("ClaimWashedItem")
+
+local GetWashableItems =
+    Wash:WaitForChild("GetWashableItems")
+
+local Notify =
+    UI:WaitForChild("Notify")
+
+--------------------------------------------------
+-- SETTINGS
+--------------------------------------------------
+
+local RUNNING = true
+
+local SLOT_COUNT = 3
+
+-- Gap between loading washers.
+local LOAD_GAP = 1.25
+
+-- Confirmed desired delay:
+-- reveal/collect -> wait -> final claim
+local CLAIM_DELAY = 3
+
+-- Give inventory/server time to update
+-- before refilling the washer.
+local REFILL_DELAY = 1
+
+-- Small delay after receiving the game's
+-- notification before attempting CollectWash.
+local NOTIFICATION_BUFFER = 0.15
+
+--------------------------------------------------
+-- LOGGING
+--------------------------------------------------
+
+local function log(...)
+    print("[AUTO WASH]", ...)
+end
+
+--------------------------------------------------
+-- GUID DETECTION
+--------------------------------------------------
+
+local function isGUID(value)
+
+    if type(value) ~= "string" then
+        return false
+    end
+
+    return value:match(
+        "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+    ) ~= nil
+end
+
+--------------------------------------------------
+-- POSSIBLE GUID FIELD NAMES
+--------------------------------------------------
+
+local GUID_KEYS = {
+
+    "UUID",
+    "Uuid",
+    "uuid",
+
+    "GUID",
+    "Guid",
+    "guid",
+
+    "ItemUUID",
+    "ItemUuid",
+    "itemUUID",
+    "itemUuid",
+
+    "ItemGUID",
+    "ItemGuid",
+    "itemGUID",
+    "itemGuid",
+
+    "UniqueId",
+    "UniqueID",
+
+    "Id",
+    "ID",
+    "id"
+}
+
+--------------------------------------------------
+-- EXTRACT GUID FROM TABLE
+--------------------------------------------------
+
+local function extractGUID(tbl, tableKey)
+
+    --------------------------------------------------
+    -- GUID MAY BE TABLE KEY
+    --------------------------------------------------
+
+    if isGUID(tableKey) then
+        return tableKey
+    end
+
+    --------------------------------------------------
+    -- DIRECT STRING
+    --------------------------------------------------
+
+    if type(tbl) ~= "table" then
+
+        if isGUID(tbl) then
+            return tbl
+        end
+
+        return nil
+    end
+
+    --------------------------------------------------
+    -- COMMON ITEM FIELDS
+    --------------------------------------------------
+
+    for _, key in ipairs(GUID_KEYS) do
+
+        local value = tbl[key]
+
+        if isGUID(value) then
+            return value
+        end
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- GET ALL CURRENT WASHABLE ITEMS
+--------------------------------------------------
+
+local function getWashableGUIDs()
+
+    local success, result = pcall(function()
+
+        return GetWashableItems:InvokeServer()
+
+    end)
+
+    if not success then
+        return {}
+    end
+
+    if type(result) ~= "table" then
+        return {}
+    end
+
+    local found = {}
+    local seen = {}
+
+    --------------------------------------------------
+    -- ADD UNIQUE GUID
+    --------------------------------------------------
+
+    local function add(guid)
+
+        if not guid then
+            return
+        end
+
+        if seen[guid] then
+            return
+        end
+
+        seen[guid] = true
+
+        table.insert(
+            found,
+            guid
+        )
+    end
+
+    --------------------------------------------------
+    -- RECURSIVE SCAN
+    --------------------------------------------------
+
+    local function scan(tbl, depth)
+
+        if type(tbl) ~= "table" then
+            return
+        end
+
+        if depth > 7 then
+            return
+        end
+
+        for key, value in pairs(tbl) do
+
+            --------------------------------------------------
+            -- GUID AS TABLE KEY
+            --------------------------------------------------
+
+            if isGUID(key) then
+                add(key)
+            end
+
+            --------------------------------------------------
+            -- NESTED TABLE
+            --------------------------------------------------
+
+            if type(value) == "table" then
+
+                add(
+                    extractGUID(
+                        value,
+                        key
+                    )
+                )
+
+                scan(
+                    value,
+                    depth + 1
+                )
+
+            --------------------------------------------------
+            -- GUID AS VALUE
+            --------------------------------------------------
+
+            elseif isGUID(value) then
+
+                add(value)
+
+            end
+        end
+    end
+
+    scan(result, 0)
+
+    return found
+end
+
+--------------------------------------------------
+-- RESERVED GUIDS
+--
+-- Prevents two washers from selecting the
+-- same dirty item.
+--------------------------------------------------
+
+local Reserved = {}
+
+local function reserveGUID(guid)
+
+    if not guid then
+        return false
+    end
+
+    if Reserved[guid] then
+        return false
+    end
+
+    Reserved[guid] = true
+
+    return true
+end
+
+local function releaseGUID(guid)
+
+    if guid then
+        Reserved[guid] = nil
+    end
+end
+
+--------------------------------------------------
+-- GET NEXT AVAILABLE DIRTY ITEM
+--------------------------------------------------
+
+local function getNextWashable()
+
+    --------------------------------------------------
+    -- ALWAYS REFRESH FROM SERVER
+    --------------------------------------------------
+
+    local guids =
+        getWashableGUIDs()
+
+    for _, guid in ipairs(guids) do
+
+        if not Reserved[guid] then
+
+            if reserveGUID(guid) then
+                return guid
+            end
+        end
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- REMOTE WRAPPERS
+--------------------------------------------------
+
+local function startWash(slot, guid)
+
+    local success, result = pcall(function()
+
+        return StartWash:InvokeServer(
+            slot,
+            guid,
+            "Inventory",
+            nil
+        )
+
+    end)
+
+    if not success then
+        return false
+    end
+
+    if result == false then
+        return false
+    end
+
+    return true
+end
+
+local function collectWash(slot)
+
+    local success, result = pcall(function()
+
+        return CollectWash:InvokeServer(
+            slot
+        )
+
+    end)
+
+    if not success then
+        return false
+    end
+
+    if result == false then
+        return false
+    end
+
+    return true
+end
+
+local function claimWash(slot)
+
+    local success, result = pcall(function()
+
+        return ClaimWashedItem:InvokeServer(
+            slot
+        )
+
+    end)
+
+    if not success then
+        return false
+    end
+
+    if result == false then
+        return false
+    end
+
+    return true
+end
+
+--------------------------------------------------
+-- SLOT INFORMATION
+--------------------------------------------------
+
+local Slots = {}
+
+for slot = 1, SLOT_COUNT do
+
+    Slots[slot] = {
+
+        GUID = nil,
+
+        Active = false,
+
+        Revealing = false,
+
+        Claiming = false,
+
+        Refilling = false
+    }
+end
+
+--------------------------------------------------
+-- LOAD ONE WASHER
+--------------------------------------------------
+
+local function loadSlot(slot)
+
+    local info =
+        Slots[slot]
+
+    --------------------------------------------------
+    -- DON'T DOUBLE LOAD
+    --------------------------------------------------
+
+    if info.Active
+        or info.Revealing
+        or info.Claiming
+        or info.Refilling then
+
+        return false
+    end
+
+    --------------------------------------------------
+    -- FIND DIRTY ITEM
+    --------------------------------------------------
+
+    local guid =
+        getNextWashable()
+
+    if not guid then
+        return false
+    end
+
+    --------------------------------------------------
+    -- START WASH
+    --------------------------------------------------
+
+    local success =
+        startWash(
+            slot,
+            guid
+        )
+
+    if not success then
+
+        releaseGUID(guid)
+
+        return false
+    end
+
+    --------------------------------------------------
+    -- TRACK SLOT
+    --------------------------------------------------
+
+    info.GUID = guid
+    info.Active = true
+
+    log(
+        "Slot",
+        slot,
+        "started"
+    )
+
+    return true
+end
+
+--------------------------------------------------
+-- REFILL ONE SLOT
+--------------------------------------------------
+
+local function refillSlot(slot)
+
+    local info =
+        Slots[slot]
+
+    if info.Refilling then
+        return
+    end
+
+    info.Refilling = true
+
+    task.spawn(function()
+
+        --------------------------------------------------
+        -- LET SERVER/INVENTORY UPDATE
+        --------------------------------------------------
+
+        task.wait(
+            REFILL_DELAY
+        )
+
+        --------------------------------------------------
+        -- KEEP LOOKING FOR NEXT DIRTY ITEM
+        --------------------------------------------------
+
+        while RUNNING do
+
+            --------------------------------------------------
+            -- SLOT MAY HAVE BEEN LOADED ELSEWHERE
+            --------------------------------------------------
+
+            if info.Active then
+                break
+            end
+
+            local loaded =
+                loadSlot(slot)
+
+            if loaded then
+                break
+            end
+
+            --------------------------------------------------
+            -- NOTHING DIRTY CURRENTLY AVAILABLE
+            --------------------------------------------------
+
+            task.wait(1)
+        end
+
+        info.Refilling = false
+
+    end)
+end
+
+--------------------------------------------------
+-- FINISH A SLOT
+--
+-- IMPORTANT:
+--
+-- This performs the sequence that worked
+-- in the standalone finished-washer test:
+--
+-- CollectWash
+--      ↓
+-- wait 3 seconds
+--      ↓
+-- ClaimWashedItem
+--------------------------------------------------
+
+local function finishSlot(slot)
+
+    local info =
+        Slots[slot]
+
+    --------------------------------------------------
+    -- ONLY ACTIVE WASHERS
+    --------------------------------------------------
+
+    if not info.Active then
+        return false
+    end
+
+    if info.Revealing
+        or info.Claiming then
+
+        return false
+    end
+
+    --------------------------------------------------
+    -- TRY TO REVEAL / COLLECT
+    --------------------------------------------------
+
+    info.Revealing = true
+
+    local collected =
+        collectWash(slot)
+
+    if not collected then
+
+        info.Revealing = false
+
+        return false
+    end
+
+    --------------------------------------------------
+    -- SERVER ACCEPTED COLLECT
+    --------------------------------------------------
+
+    log(
+        "Slot",
+        slot,
+        "revealed"
+    )
+
+    info.Active = false
+    info.Revealing = false
+    info.Claiming = true
+
+    local oldGUID =
+        info.GUID
+
+    --------------------------------------------------
+    -- WAIT BEFORE FINAL CLAIM
+    --------------------------------------------------
+
+    task.spawn(function()
+
+        task.wait(
+            CLAIM_DELAY
+        )
+
+        --------------------------------------------------
+        -- CLAIM
+        --------------------------------------------------
+
+        local claimed =
+            claimWash(slot)
+
+        --------------------------------------------------
+        -- RETRY CLAIM IF NECESSARY
+        --------------------------------------------------
+
+        if not claimed then
+
+            for attempt = 1, 5 do
+
+                if not RUNNING then
+                    break
+                end
+
+                task.wait(0.75)
+
+                claimed =
+                    claimWash(slot)
+
+                if claimed then
+                    break
+                end
+            end
+        end
+
+        --------------------------------------------------
+        -- SUCCESS
+        --------------------------------------------------
+
+        if claimed then
+
+            log(
+                "Slot",
+                slot,
+                "claimed"
+            )
+
+            releaseGUID(
+                oldGUID
+            )
+
+            info.GUID = nil
+            info.Claiming = false
+
+            --------------------------------------------------
+            -- PUT NEXT DIRTY ITEM INTO THIS WASHER
+            --------------------------------------------------
+
+            refillSlot(slot)
+
+        else
+
+            --------------------------------------------------
+            -- KEEP SLOT TRACKED SO WE DON'T
+            -- ACCIDENTALLY OVERWRITE IT.
+            --------------------------------------------------
+
+            log(
+                "Slot",
+                slot,
+                "claim pending"
+            )
+
+            info.Claiming = false
+        end
+
+    end)
+
+    return true
+end
+
+--------------------------------------------------
+-- COMPLETION QUEUE
+--
+-- The notification doesn't tell us which
+-- washer completed.
+--
+-- Each Cleaning complete! notification adds
+-- one completion to this queue.
+--------------------------------------------------
+
+local PendingCompletions = 0
+local ProcessingCompletions = false
+
+--------------------------------------------------
+-- PROCESS COMPLETION NOTIFICATIONS
+--------------------------------------------------
+
+local function processCompletionQueue()
+
+    if ProcessingCompletions then
+        return
+    end
+
+    ProcessingCompletions = true
+
+    task.spawn(function()
+
+        while RUNNING
+            and PendingCompletions > 0 do
+
+            --------------------------------------------------
+            -- REMOVE ONE NOTIFICATION FROM QUEUE
+            --------------------------------------------------
+
+            PendingCompletions -= 1
+
+            --------------------------------------------------
+            -- SMALL BUFFER AFTER SERVER NOTIFICATION
+            --------------------------------------------------
+
+            task.wait(
+                NOTIFICATION_BUFFER
+            )
+
+            --------------------------------------------------
+            -- TRY ACTIVE SLOTS
+            --
+            -- The completed washer should accept
+            -- CollectWash.
+            --------------------------------------------------
+
+            local foundSlot = false
+
+            for slot = 1, SLOT_COUNT do
+
+                if not RUNNING then
+                    break
+                end
+
+                local info =
+                    Slots[slot]
+
+                if info.Active
+                    and not info.Revealing
+                    and not info.Claiming then
+
+                    local accepted =
+                        finishSlot(slot)
+
+                    if accepted then
+
+                        foundSlot = true
+
+                        --------------------------------------------------
+                        -- ONE NOTIFICATION = ONE COMPLETED WASH
+                        --------------------------------------------------
+
+                        break
+                    end
+                end
+            end
+
+            --------------------------------------------------
+            -- IF SERVER STATE WAS A LITTLE LATE,
+            -- TRY ONCE MORE SHORTLY AFTER.
+            --------------------------------------------------
+
+            if not foundSlot
+                and RUNNING then
+
+                task.wait(0.5)
+
+                for slot = 1, SLOT_COUNT do
+
+                    local info =
+                        Slots[slot]
+
+                    if info.Active
+                        and not info.Revealing
+                        and not info.Claiming then
+
+                        local accepted =
+                            finishSlot(slot)
+
+                        if accepted then
+                            foundSlot = true
+                            break
+                        end
+                    end
+                end
+            end
+
+            if not foundSlot then
+
+                log(
+                    "Completion detected but no slot accepted CollectWash"
+                )
+            end
+        end
+
+        ProcessingCompletions = false
+
+        --------------------------------------------------
+        -- HANDLE NOTIFICATION THAT MAY HAVE ARRIVED
+        -- JUST AS LOOP ENDED
+        --------------------------------------------------
+
+        if RUNNING
+            and PendingCompletions > 0 then
+
+            processCompletionQueue()
+        end
+
+    end)
+end
+
+--------------------------------------------------
+-- LISTEN TO THE GAME'S REAL NOTIFICATION
+--------------------------------------------------
+
+Notify.OnClientEvent:Connect(function(message, color, ...)
+
+    --------------------------------------------------
+    -- ONLY CARE ABOUT CLEANING COMPLETION
+    --------------------------------------------------
+
+    if tostring(message) ~= "Cleaning complete!" then
+        return
+    end
+
+    log(
+        "Cleaning complete notification detected"
+    )
+
+    PendingCompletions += 1
+
+    processCompletionQueue()
+
+end)
+
+--------------------------------------------------
+-- INITIAL SLOT LOAD
+--
+-- We already established that sequential loading
+-- is more reliable than starting all three
+-- simultaneously.
+--------------------------------------------------
+
+log("Starting Auto Wash")
+
+for slot = 1, SLOT_COUNT do
+
+    if not RUNNING then
+        break
+    end
+
+    --------------------------------------------------
+    -- RETRY INITIAL SLOT
+    --------------------------------------------------
+
+    local loaded = false
+
+    for attempt = 1, 5 do
+
+        loaded =
+            loadSlot(slot)
+
+        if loaded then
+            break
+        end
+
+        task.wait(1)
+    end
+
+    if loaded then
+
+        log(
+            "Slot",
+            slot,
+            "loaded successfully"
+        )
+
+    else
+
+        log(
+            "Slot",
+            slot,
+            "waiting for dirty item"
+        )
+
+        --------------------------------------------------
+        -- IF THERE ARE MORE DIRTY ITEMS LATER,
+        -- THIS SLOT WILL KEEP TRYING.
+        --------------------------------------------------
+
+        refillSlot(slot)
+    end
+
+    task.wait(
+        LOAD_GAP
+    )
+end
+
+--------------------------------------------------
+-- BACKUP EMPTY SLOT REFILL WATCHER
+--
+-- This is NOT used for completion detection.
+-- It only makes sure an empty washer eventually
+-- gets another dirty item.
+--------------------------------------------------
+
+task.spawn(function()
+
+    while RUNNING do
+
+        for slot = 1, SLOT_COUNT do
+
+            local info =
+                Slots[slot]
+
+            if not info.Active
+                and not info.Revealing
+                and not info.Claiming
+                and not info.Refilling then
+
+                refillSlot(slot)
+            end
+        end
+
+        task.wait(2)
+    end
+
+end)
+
+log("Auto Wash running")
+log("Waiting for Cleaning complete! notifications")
