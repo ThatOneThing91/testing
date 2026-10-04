@@ -1,0 +1,1161 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+--------------------------------------------------
+-- AUTO WASH - FULL TEST
+--
+-- GOALS:
+-- 1. Scan GetWashableItems
+-- 2. SKIP Broken items
+-- 3. Clear finished/claimable washers
+-- 4. Fill slots 1, 2, 3 independently
+-- 5. Listen for "Cleaning complete!"
+-- 6. Collect/reveal finished wash
+-- 7. Wait 3 seconds
+-- 8. ClaimWashedItem
+-- 9. Refill cleared slot
+--------------------------------------------------
+
+local Events = ReplicatedStorage:WaitForChild("Events")
+local Wash = Events:WaitForChild("Wash")
+local UI = Events:WaitForChild("UI")
+
+local StartWash = Wash:WaitForChild("StartWash")
+local CollectWash = Wash:WaitForChild("CollectWash")
+local ClaimWashedItem = Wash:WaitForChild("ClaimWashedItem")
+local GetWashableItems = Wash:WaitForChild("GetWashableItems")
+local GetSlotState = Wash:WaitForChild("GetSlotState")
+
+local Notify = UI:WaitForChild("Notify")
+
+--------------------------------------------------
+-- SETTINGS
+--------------------------------------------------
+
+local RUNNING = true
+
+local SLOT_COUNT = 3
+
+local CLAIM_DELAY = 3
+local LOAD_GAP = 1.5
+local REFILL_DELAY = 1
+local NOTIFICATION_BUFFER = 0.2
+
+--------------------------------------------------
+-- LOGGING
+--------------------------------------------------
+
+local function log(...)
+    print("[AUTO WASH]", ...)
+end
+
+--------------------------------------------------
+-- GUID
+--------------------------------------------------
+
+local function isGUID(value)
+
+    if type(value) ~= "string" then
+        return false
+    end
+
+    return value:match(
+        "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+    ) ~= nil
+end
+
+local GUID_KEYS = {
+    "UUID",
+    "Uuid",
+    "uuid",
+
+    "GUID",
+    "Guid",
+    "guid",
+
+    "ItemUUID",
+    "ItemUuid",
+    "itemUUID",
+    "itemUuid",
+
+    "ItemGUID",
+    "ItemGuid",
+    "itemGUID",
+    "itemGuid",
+
+    "UniqueId",
+    "UniqueID",
+
+    "Id",
+    "ID",
+    "id"
+}
+
+local function extractGUID(tbl, tableKey)
+
+    if isGUID(tableKey) then
+        return tableKey
+    end
+
+    if type(tbl) ~= "table" then
+
+        if isGUID(tbl) then
+            return tbl
+        end
+
+        return nil
+    end
+
+    for _, key in ipairs(GUID_KEYS) do
+
+        local value = tbl[key]
+
+        if isGUID(value) then
+            return value
+        end
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- BROKEN DETECTION
+--
+-- Dirty + Broken = SKIP
+--------------------------------------------------
+
+local function containsBroken(value, depth)
+
+    depth = depth or 0
+
+    if depth > 10 then
+        return false
+    end
+
+    --------------------------------------------------
+    -- STRING VALUE
+    --------------------------------------------------
+
+    if type(value) == "string" then
+
+        return string.lower(value) == "broken"
+    end
+
+    --------------------------------------------------
+    -- ONLY TABLES FROM HERE
+    --------------------------------------------------
+
+    if type(value) ~= "table" then
+        return false
+    end
+
+    for key, child in pairs(value) do
+
+        local keyLower =
+            string.lower(tostring(key))
+
+        --------------------------------------------------
+        -- Broken = true
+        --------------------------------------------------
+
+        if keyLower == "broken"
+            and child == true then
+
+            return true
+        end
+
+        --------------------------------------------------
+        -- Broken = "true"
+        --------------------------------------------------
+
+        if keyLower == "broken"
+            and type(child) == "string"
+            and string.lower(child) == "true" then
+
+            return true
+        end
+
+        --------------------------------------------------
+        -- Mutator = "Broken"
+        -- [1] = "Broken"
+        --------------------------------------------------
+
+        if type(child) == "string"
+            and string.lower(child) == "broken" then
+
+            return true
+        end
+
+        --------------------------------------------------
+        -- RECURSIVE
+        --------------------------------------------------
+
+        if type(child) == "table" then
+
+            if containsBroken(
+                child,
+                depth + 1
+            ) then
+
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+--------------------------------------------------
+-- WASHABLE ITEMS
+--------------------------------------------------
+
+local function getWashableItems()
+
+    local ok, result = pcall(function()
+
+        return GetWashableItems:InvokeServer()
+
+    end)
+
+    if not ok then
+        return nil
+    end
+
+    if type(result) ~= "table" then
+        return nil
+    end
+
+    return result
+end
+
+--------------------------------------------------
+-- BUILD CLEAN WASHABLE LIST
+--
+-- IMPORTANT:
+-- Broken items are NOT returned.
+--------------------------------------------------
+
+local function getUsableWashables()
+
+    local result =
+        getWashableItems()
+
+    if not result then
+        return {}
+    end
+
+    local found = {}
+    local seen = {}
+
+    local function add(guid, itemRecord)
+
+        if not guid then
+            return
+        end
+
+        if seen[guid] then
+            return
+        end
+
+        --------------------------------------------------
+        -- SKIP BROKEN
+        --------------------------------------------------
+
+        if itemRecord
+            and containsBroken(itemRecord) then
+
+            return
+        end
+
+        seen[guid] = true
+
+        table.insert(found, {
+            GUID = guid,
+            Data = itemRecord
+        })
+    end
+
+    local function scan(tbl, depth)
+
+        if type(tbl) ~= "table" then
+            return
+        end
+
+        if depth > 8 then
+            return
+        end
+
+        for key, value in pairs(tbl) do
+
+            --------------------------------------------------
+            -- ITEM TABLE
+            --------------------------------------------------
+
+            if type(value) == "table" then
+
+                local guid =
+                    extractGUID(
+                        value,
+                        key
+                    )
+
+                if guid then
+
+                    --------------------------------------------------
+                    -- CHECK ENTIRE ITEM RECORD FOR BROKEN
+                    --------------------------------------------------
+
+                    add(
+                        guid,
+                        value
+                    )
+
+                else
+
+                    scan(
+                        value,
+                        depth + 1
+                    )
+                end
+
+            --------------------------------------------------
+            -- GUID DIRECTLY STORED AS VALUE
+            --------------------------------------------------
+
+            elseif isGUID(value) then
+
+                --------------------------------------------------
+                -- Use parent record so Broken can still
+                -- be detected beside the GUID.
+                --------------------------------------------------
+
+                add(
+                    value,
+                    tbl
+                )
+
+            --------------------------------------------------
+            -- GUID AS TABLE KEY
+            --------------------------------------------------
+
+            elseif isGUID(key) then
+
+                add(
+                    key,
+                    tbl
+                )
+            end
+        end
+    end
+
+    scan(result, 0)
+
+    return found
+end
+
+--------------------------------------------------
+-- RESERVED GUIDS
+--------------------------------------------------
+
+local Reserved = {}
+
+local function releaseGUID(guid)
+
+    if guid then
+        Reserved[guid] = nil
+    end
+end
+
+local function getNextWashable()
+
+    --------------------------------------------------
+    -- FRESH SERVER REQUEST EVERY TIME
+    --------------------------------------------------
+
+    local items =
+        getUsableWashables()
+
+    for _, item in ipairs(items) do
+
+        local guid =
+            item.GUID
+
+        if not Reserved[guid] then
+
+            Reserved[guid] = true
+
+            return guid
+        end
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- REMOTE WRAPPERS
+--------------------------------------------------
+
+local function sendStart(slot, guid)
+
+    local ok, result = pcall(function()
+
+        return StartWash:InvokeServer(
+            slot,
+            guid,
+            "Inventory",
+            nil
+        )
+
+    end)
+
+    if not ok then
+        return false
+    end
+
+    if result == false then
+        return false
+    end
+
+    return true
+end
+
+local function sendCollect(slot)
+
+    local ok, result = pcall(function()
+
+        return CollectWash:InvokeServer(
+            slot
+        )
+
+    end)
+
+    if not ok then
+        return false
+    end
+
+    if result == false then
+        return false
+    end
+
+    return true
+end
+
+local function sendClaim(slot)
+
+    local ok, result = pcall(function()
+
+        return ClaimWashedItem:InvokeServer(
+            slot
+        )
+
+    end)
+
+    if not ok then
+        return false
+    end
+
+    if result == false then
+        return false
+    end
+
+    return true
+end
+
+local function getSlotState(slot)
+
+    local ok, result = pcall(function()
+
+        return GetSlotState:InvokeServer(
+            slot
+        )
+
+    end)
+
+    if ok then
+        return result
+    end
+
+    return nil
+end
+
+--------------------------------------------------
+-- SLOT TRACKING
+--------------------------------------------------
+
+local Slots = {}
+
+for slot = 1, SLOT_COUNT do
+
+    Slots[slot] = {
+        GUID = nil,
+        Active = false,
+        Processing = false,
+        Refilling = false
+    }
+end
+
+--------------------------------------------------
+-- STATE FINGERPRINT
+--
+-- Used only to help verify StartWash actually
+-- changed the server's slot state.
+--------------------------------------------------
+
+local function fingerprint(value, depth)
+
+    depth = depth or 0
+
+    if depth > 6 then
+        return ""
+    end
+
+    if type(value) ~= "table" then
+        return tostring(value)
+    end
+
+    local pieces = {}
+
+    for key, child in pairs(value) do
+
+        table.insert(
+            pieces,
+            tostring(key)
+            .. "="
+            .. fingerprint(
+                child,
+                depth + 1
+            )
+        )
+    end
+
+    table.sort(pieces)
+
+    return table.concat(
+        pieces,
+        "|"
+    )
+end
+
+--------------------------------------------------
+-- CLEAR SOMETHING ALREADY WAITING
+--
+-- This handles the situation where the script
+-- starts while a washer already contains a
+-- finished item.
+--------------------------------------------------
+
+local function clearExistingFinished(slot)
+
+    --------------------------------------------------
+    -- FIRST TRY FINAL CLAIM
+    --
+    -- If the washer is already in its final claim
+    -- stage, this can clear it immediately.
+    --------------------------------------------------
+
+    local claimed =
+        sendClaim(slot)
+
+    if claimed then
+
+        log(
+            "Slot",
+            slot,
+            "cleared existing claim"
+        )
+
+        task.wait(0.75)
+
+        return true
+    end
+
+    --------------------------------------------------
+    -- OTHERWISE TRY REVEAL/COLLECT
+    --------------------------------------------------
+
+    local collected =
+        sendCollect(slot)
+
+    if not collected then
+        return false
+    end
+
+    log(
+        "Slot",
+        slot,
+        "revealed existing wash"
+    )
+
+    --------------------------------------------------
+    -- REQUIRED WAIT
+    --------------------------------------------------
+
+    task.wait(
+        CLAIM_DELAY
+    )
+
+    --------------------------------------------------
+    -- FINAL CLAIM
+    --------------------------------------------------
+
+    for attempt = 1, 5 do
+
+        claimed =
+            sendClaim(slot)
+
+        if claimed then
+
+            log(
+                "Slot",
+                slot,
+                "claimed existing wash"
+            )
+
+            task.wait(0.75)
+
+            return true
+        end
+
+        task.wait(0.5)
+    end
+
+    return false
+end
+
+--------------------------------------------------
+-- VERIFY SLOT CHANGED
+--------------------------------------------------
+
+local function waitForSlotChange(
+    slot,
+    beforeFingerprint
+)
+
+    for attempt = 1, 8 do
+
+        if not RUNNING then
+            return false
+        end
+
+        task.wait(0.25)
+
+        local state =
+            getSlotState(slot)
+
+        local after =
+            fingerprint(state)
+
+        if after ~= beforeFingerprint then
+            return true
+        end
+    end
+
+    return false
+end
+
+--------------------------------------------------
+-- LOAD ONE SLOT
+--------------------------------------------------
+
+local function loadSlot(slot)
+
+    local info =
+        Slots[slot]
+
+    if info.Active
+        or info.Processing then
+
+        return false
+    end
+
+    --------------------------------------------------
+    -- GET STATE BEFORE START
+    --------------------------------------------------
+
+    local beforeState =
+        getSlotState(slot)
+
+    local beforeFingerprint =
+        fingerprint(beforeState)
+
+    --------------------------------------------------
+    -- GET FRESH DIRTY NON-BROKEN ITEM
+    --------------------------------------------------
+
+    local guid =
+        getNextWashable()
+
+    if not guid then
+        return false
+    end
+
+    --------------------------------------------------
+    -- START WASH
+    --------------------------------------------------
+
+    local started =
+        sendStart(
+            slot,
+            guid
+        )
+
+    if not started then
+
+        releaseGUID(guid)
+
+        return false
+    end
+
+    --------------------------------------------------
+    -- VERIFY SERVER STATE CHANGED
+    --------------------------------------------------
+
+    local changed =
+        waitForSlotChange(
+            slot,
+            beforeFingerprint
+        )
+
+    if not changed then
+
+        --------------------------------------------------
+        -- DON'T PRETEND SLOT LOADED.
+        --------------------------------------------------
+
+        releaseGUID(guid)
+
+        log(
+            "Slot",
+            slot,
+            "did not verify load"
+        )
+
+        return false
+    end
+
+    --------------------------------------------------
+    -- CONFIRMED
+    --------------------------------------------------
+
+    info.GUID = guid
+    info.Active = true
+
+    log(
+        "Slot",
+        slot,
+        "loaded"
+    )
+
+    return true
+end
+
+--------------------------------------------------
+-- REFILL SLOT
+--------------------------------------------------
+
+local function refillSlot(slot)
+
+    local info =
+        Slots[slot]
+
+    if info.Refilling then
+        return
+    end
+
+    info.Refilling = true
+
+    task.spawn(function()
+
+        task.wait(
+            REFILL_DELAY
+        )
+
+        while RUNNING do
+
+            if info.Active
+                or info.Processing then
+
+                break
+            end
+
+            --------------------------------------------------
+            -- REFRESHES GetWashableItems EVERY ATTEMPT
+            --------------------------------------------------
+
+            local loaded =
+                loadSlot(slot)
+
+            if loaded then
+                break
+            end
+
+            task.wait(1)
+        end
+
+        info.Refilling = false
+
+    end)
+end
+
+--------------------------------------------------
+-- PROCESS COMPLETED SLOT
+--------------------------------------------------
+
+local function processFinishedSlot(slot)
+
+    local info =
+        Slots[slot]
+
+    if info.Processing then
+        return false
+    end
+
+    info.Processing = true
+
+    --------------------------------------------------
+    -- REVEAL / COLLECT
+    --------------------------------------------------
+
+    local collected =
+        sendCollect(slot)
+
+    if not collected then
+
+        info.Processing = false
+
+        return false
+    end
+
+    log(
+        "Slot",
+        slot,
+        "revealed"
+    )
+
+    --------------------------------------------------
+    -- WAIT 3 SECONDS
+    --------------------------------------------------
+
+    task.spawn(function()
+
+        task.wait(
+            CLAIM_DELAY
+        )
+
+        --------------------------------------------------
+        -- CLAIM WITH RETRIES
+        --------------------------------------------------
+
+        local claimed = false
+
+        for attempt = 1, 6 do
+
+            if not RUNNING then
+                break
+            end
+
+            claimed =
+                sendClaim(slot)
+
+            if claimed then
+                break
+            end
+
+            task.wait(0.75)
+        end
+
+        if claimed then
+
+            log(
+                "Slot",
+                slot,
+                "claimed"
+            )
+
+            --------------------------------------------------
+            -- RELEASE PREVIOUS ITEM
+            --------------------------------------------------
+
+            releaseGUID(
+                info.GUID
+            )
+
+            info.GUID = nil
+            info.Active = false
+            info.Processing = false
+
+            --------------------------------------------------
+            -- REFILL THIS EXACT SLOT
+            --------------------------------------------------
+
+            refillSlot(slot)
+
+        else
+
+            log(
+                "Slot",
+                slot,
+                "claim still pending"
+            )
+
+            info.Processing = false
+        end
+
+    end)
+
+    return true
+end
+
+--------------------------------------------------
+-- COMPLETION QUEUE
+--------------------------------------------------
+
+local PendingCompletions = 0
+local ProcessingQueue = false
+
+local function processCompletionQueue()
+
+    if ProcessingQueue then
+        return
+    end
+
+    ProcessingQueue = true
+
+    task.spawn(function()
+
+        while RUNNING
+            and PendingCompletions > 0 do
+
+            PendingCompletions -= 1
+
+            task.wait(
+                NOTIFICATION_BUFFER
+            )
+
+            local handled = false
+
+            --------------------------------------------------
+            -- TRY ALL THREE WASHERS
+            --------------------------------------------------
+
+            for slot = 1, SLOT_COUNT do
+
+                if not RUNNING then
+                    break
+                end
+
+                local info =
+                    Slots[slot]
+
+                if not info.Processing then
+
+                    local accepted =
+                        processFinishedSlot(slot)
+
+                    if accepted then
+
+                        handled = true
+
+                        --------------------------------------------------
+                        -- ONE NOTIFICATION =
+                        -- ONE COMPLETED WASH
+                        --------------------------------------------------
+
+                        break
+                    end
+                end
+            end
+
+            --------------------------------------------------
+            -- SERVER MAY NEED A MOMENT AFTER NOTIFY
+            --------------------------------------------------
+
+            if not handled
+                and RUNNING then
+
+                task.wait(0.5)
+
+                for slot = 1, SLOT_COUNT do
+
+                    local info =
+                        Slots[slot]
+
+                    if not info.Processing then
+
+                        local accepted =
+                            processFinishedSlot(slot)
+
+                        if accepted then
+                            handled = true
+                            break
+                        end
+                    end
+                end
+            end
+
+            if not handled then
+
+                log(
+                    "Completion received; waiting for washer"
+                )
+
+                --------------------------------------------------
+                -- DON'T LOSE COMPLETION EVENT.
+                --------------------------------------------------
+
+                task.wait(0.75)
+
+                PendingCompletions += 1
+            end
+        end
+
+        ProcessingQueue = false
+
+        if RUNNING
+            and PendingCompletions > 0 then
+
+            processCompletionQueue()
+        end
+
+    end)
+end
+
+--------------------------------------------------
+-- REAL GAME COMPLETION NOTIFICATION
+--------------------------------------------------
+
+Notify.OnClientEvent:Connect(function(
+    message,
+    color,
+    ...
+)
+
+    if tostring(message)
+        ~= "Cleaning complete!" then
+
+        return
+    end
+
+    log(
+        "Cleaning complete detected"
+    )
+
+    PendingCompletions += 1
+
+    processCompletionQueue()
+end)
+
+--------------------------------------------------
+-- STARTUP
+--
+-- IMPORTANT:
+--
+-- BEFORE loading a new item, try to clear
+-- anything already waiting in that washer.
+--------------------------------------------------
+
+log("Starting Auto Wash")
+
+for slot = 1, SLOT_COUNT do
+
+    if not RUNNING then
+        break
+    end
+
+    --------------------------------------------------
+    -- CLEAR EXISTING FINISHED/CLAIMABLE ITEM
+    --------------------------------------------------
+
+    clearExistingFinished(slot)
+
+    --------------------------------------------------
+    -- NOW TRY LOADING THE SLOT
+    --------------------------------------------------
+
+    local loaded = false
+
+    for attempt = 1, 6 do
+
+        if not RUNNING then
+            break
+        end
+
+        loaded =
+            loadSlot(slot)
+
+        if loaded then
+            break
+        end
+
+        task.wait(0.75)
+    end
+
+    if loaded then
+
+        log(
+            "Slot",
+            slot,
+            "ready"
+        )
+
+    else
+
+        --------------------------------------------------
+        -- DON'T FALSELY SAY IT LOADED.
+        --------------------------------------------------
+
+        log(
+            "Slot",
+            slot,
+            "not loaded yet"
+        )
+
+        refillSlot(slot)
+    end
+
+    --------------------------------------------------
+    -- IMPORTANT:
+    -- Let server inventory update before next slot.
+    --------------------------------------------------
+
+    task.wait(
+        LOAD_GAP
+    )
+end
+
+--------------------------------------------------
+-- BACKUP SLOT MAINTENANCE
+--
+-- Does NOT determine when cleaning finishes.
+--
+-- Cleaning completion still comes from:
+-- "Cleaning complete!"
+--------------------------------------------------
+
+task.spawn(function()
+
+    while RUNNING do
+
+        for slot = 1, SLOT_COUNT do
+
+            local info =
+                Slots[slot]
+
+            if not info.Active
+                and not info.Processing
+                and not info.Refilling then
+
+                refillSlot(slot)
+            end
+        end
+
+        task.wait(2)
+    end
+end)
+
+--------------------------------------------------
+-- READY
+--------------------------------------------------
+
+log("Auto Wash running")
+log("Broken dirty items will be skipped")
+log("Listening for Cleaning complete!")
