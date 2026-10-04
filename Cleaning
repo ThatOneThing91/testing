@@ -1,6 +1,5 @@
 --====================================================
 -- STORAGE HUNTERS - STANDALONE AUTO WASH
--- Based on the working NexHub wash logic
 --====================================================
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
