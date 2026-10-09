@@ -1,0 +1,616 @@
+
+--==============================================================
+-- TESTS TAB | AUTO GRADING
+-- Independent from Quick Sell filters
+--==============================================================
+
+do
+    local Page = ThisHubInstance.TestsExtraPage
+    local GradeEvents = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Grading")
+    local Modules = ReplicatedStorage:WaitForChild("Modules")
+
+    local GradeItems = require(Modules:WaitForChild("Items"))
+    local GradeMutators = require(Modules:WaitForChild("MutatorModule"))
+
+    local GradeRunning = false
+    local GradeRunId = 0
+    local GradeMode = "Grade All"
+
+    local SelectedRarities = {}
+    local SelectedMutators = {}
+    local SelectedNames = {}
+
+    local GradeAttempts = {}
+
+    local function Normalize(value)
+        return tostring(value or ""):lower():match("^%s*(.-)%s*$")
+    end
+
+    local function GradeInvoke(name, ...)
+        local remote = GradeEvents:FindFirstChild(name)
+        if not remote then
+            return false, "Missing remote: " .. name
+        end
+
+        local args = table.pack(...)
+
+        return pcall(function()
+            return remote:InvokeServer(
+                table.unpack(args, 1, args.n)
+            )
+        end)
+    end
+
+    local function GradeLabel(text, height)
+        return New("TextLabel", {
+            Size = UDim2.new(1, -8, 0, height or 28),
+            BackgroundTransparency = 1,
+            Text = text,
+            TextColor3 = TextColor,
+            Font = Enum.Font.GothamMedium,
+            TextSize = 12,
+            TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }, Page)
+    end
+
+    local function GradeSection(text)
+        local label = GradeLabel(text, 30)
+        label.TextColor3 = ThemeColor
+        label.Font = Enum.Font.GothamBold
+        return label
+    end
+
+    GradeSection("AUTO GRADING | TESTS")
+
+    local GradeStatus = GradeLabel("Status: Idle", 32)
+    local GradeSlots = GradeLabel("Slots: Not checked", 42)
+    local GradeSelected = GradeLabel("Selected Options: None", 60)
+
+    local function UpdateSelected()
+        local values = {}
+
+        for rarity, active in pairs(SelectedRarities) do
+            if active then
+                table.insert(values, "Rarity: " .. rarity)
+            end
+        end
+
+        for mutator, active in pairs(SelectedMutators) do
+            if active then
+                table.insert(values, "Mutator: " .. mutator)
+            end
+        end
+
+        for name, active in pairs(SelectedNames) do
+            if active then
+                table.insert(values, "Name: " .. name)
+            end
+        end
+
+        table.sort(values)
+
+        GradeSelected.Text = "Selected Options: " ..
+            (#values > 0 and table.concat(values, ", ") or "None")
+    end
+
+    local function HasSelections()
+        return next(SelectedRarities) ~= nil
+            or next(SelectedMutators) ~= nil
+            or next(SelectedNames) ~= nil
+    end
+
+    local Rarities = {
+        "Junk",
+        "Uncommon",
+        "Rare",
+        "Epic",
+        "Legendary",
+        "Mythical",
+        "Exclusive",
+    }
+
+    local Mutators = {}
+    local seen = {}
+
+    local function AddMutator(name)
+        if type(name) ~= "string" then
+            return
+        end
+
+        local key = Normalize(name)
+        if key == "" or seen[key] then
+            return
+        end
+
+        seen[key] = true
+        table.insert(Mutators, name)
+    end
+
+    for _, collection in ipairs({
+        GradeMutators.Mutations or {},
+        GradeMutators.MiningMutations or {},
+    }) do
+        for _, definition in pairs(collection) do
+            if type(definition) == "table" then
+                AddMutator(definition.Name)
+            end
+        end
+    end
+
+    for name in pairs(GradeMutators._timeMutationIndex or {}) do
+        AddMutator(name)
+    end
+
+    table.sort(Mutators)
+
+    local function CreateGradeMultiSelect(title, options, selected)
+        local holder = New("Frame", {
+            Size = UDim2.new(1, -8, 0, 38),
+            BackgroundColor3 = ButtonBackground,
+            BorderSizePixel = 0,
+            ClipsDescendants = true,
+        }, Page)
+        Corner(holder, 7)
+
+        local header = New("TextButton", {
+            Size = UDim2.new(1, 0, 0, 38),
+            BackgroundTransparency = 1,
+            Text = title .. "  ▼",
+            TextColor3 = TextColor,
+            Font = Enum.Font.GothamBold,
+            TextSize = 12,
+        }, holder)
+
+        local list = New("Frame", {
+            Size = UDim2.new(1, -12, 0, 0),
+            Position = UDim2.fromOffset(6, 38),
+            BackgroundTransparency = 1,
+        }, holder)
+
+        Layout(list, 3)
+
+        local open = false
+        local buttons = {}
+
+        local function Refresh()
+            local count = 0
+
+            for _, option in ipairs(options) do
+                if selected[Normalize(option)] then
+                    count += 1
+                end
+            end
+
+            header.Text = title .. " (" .. count .. ") " ..
+                (open and "▲" or "▼")
+
+            for _, data in ipairs(buttons) do
+                local active = selected[Normalize(data.name)]
+
+                data.button.Text =
+                    (active and "✓  " or "    ") .. data.name
+
+                data.button.BackgroundColor3 =
+                    active and ThemeColor or DarkerBackground
+            end
+
+            local height = #options * 32
+
+            list.Size = UDim2.new(1, -12, 0, height)
+
+            holder.Size = UDim2.new(
+                1, -8, 0,
+                open and 42 + height or 38
+            )
+
+            UpdateSelected()
+        end
+
+        for _, option in ipairs(options) do
+            local b = New("TextButton", {
+                Size = UDim2.new(1, 0, 0, 29),
+                BackgroundColor3 = DarkerBackground,
+                BorderSizePixel = 0,
+                Text = option,
+                TextColor3 = TextColor,
+                Font = Enum.Font.Gotham,
+                TextSize = 11,
+                TextXAlignment = Enum.TextXAlignment.Left,
+            }, list)
+
+            Corner(b, 5)
+
+            table.insert(buttons, {
+                name = option,
+                button = b,
+            })
+
+            TrackConnection(b.MouseButton1Click:Connect(function()
+                local key = Normalize(option)
+
+                if selected[key] then
+                    selected[key] = nil
+                else
+                    selected[key] = true
+                end
+
+                Refresh()
+            end))
+        end
+
+        TrackConnection(header.MouseButton1Click:Connect(function()
+            open = not open
+            Refresh()
+        end))
+
+        Refresh()
+        return Refresh
+    end
+
+    GradeSection("GRADING FILTERS")
+
+    local ModeButton = CreateActionButton(
+        Page,
+        "MODE: Grade All",
+        function()
+            if GradeMode == "Grade All" then
+                GradeMode = "Grade Selected"
+            elseif GradeMode == "Grade Selected" then
+                GradeMode = "Exclude Selected"
+            else
+                GradeMode = "Grade All"
+            end
+
+            ModeButton.Text = "MODE: " .. GradeMode
+        end
+    )
+
+    local RefreshRarities = CreateGradeMultiSelect(
+        "Rarity", Rarities, SelectedRarities
+    )
+
+    local RefreshMutators = CreateGradeMultiSelect(
+        "Mutators", Mutators, SelectedMutators
+    )
+
+    GradeSection("ITEM NAME FILTER")
+
+    local NameInput = New("TextBox", {
+        Size = UDim2.new(1, -8, 0, 38),
+        BackgroundColor3 = ButtonBackground,
+        TextColor3 = TextColor,
+        PlaceholderText = "Enter exact item name",
+        Text = "",
+        TextSize = 12,
+        ClearTextOnFocus = false,
+    }, Page)
+    Corner(NameInput, 7)
+
+    CreateActionButton(Page, "Add Item Name", function()
+        local name = Normalize(NameInput.Text)
+
+        if name ~= "" then
+            SelectedNames[name] = true
+            NameInput.Text = ""
+            UpdateSelected()
+        end
+    end)
+
+    CreateActionButton(Page, "Clear All Grading Filters", function()
+        table.clear(SelectedRarities)
+        table.clear(SelectedMutators)
+        table.clear(SelectedNames)
+
+        RefreshRarities()
+        RefreshMutators()
+        UpdateSelected()
+    end)
+
+    local function GetDetails(entry)
+        local data = entry.data or entry.Data or {}
+        local id = data.ItemId or data.itemId
+
+        local definition = GradeItems[id]
+            or GradeItems[tostring(id or "")]
+
+        if type(definition) ~= "table" then
+            definition = {}
+        end
+
+        return {
+            name = Normalize(definition.Name or data.Name),
+            rarity = Normalize(definition.Rarity or data.Rarity),
+            mutators = data.Mutators or {},
+        }
+    end
+
+    local function MatchesMutator(mutators)
+        if type(mutators) ~= "table" then
+            return false
+        end
+
+        for key, value in pairs(mutators) do
+            local name
+
+            if type(key) == "number" then
+                if type(value) == "string" then
+                    name = value
+                elseif type(value) == "table" then
+                    name = value.Name or value.name
+                end
+            elseif value ~= false and value ~= nil then
+                name = key
+            end
+
+            if name and SelectedMutators[Normalize(name)] then
+                return true
+            end
+        end
+
+        return false
+    end
+
+    local function MatchesFilters(entry)
+        if GradeMode == "Grade All" then
+            return true
+        end
+
+        local details = GetDetails(entry)
+
+        local matches =
+            SelectedRarities[details.rarity]
+            or SelectedNames[details.name]
+            or MatchesMutator(details.mutators)
+
+        if GradeMode == "Grade Selected" then
+            return HasSelections() and matches == true
+        end
+
+        return not matches
+    end
+
+    local function GetCandidates()
+        local ok, result = GradeInvoke("GetGradableItems")
+
+        if not ok or type(result) ~= "table" then
+            return {}
+        end
+
+        local source = result.items or result.Items or result
+        local candidates = {}
+
+        for _, entry in pairs(source) do
+            if type(entry) == "table"
+                and (entry.guid or entry.Guid)
+                and MatchesFilters(entry) then
+
+                table.insert(candidates, entry)
+            end
+        end
+
+        return candidates
+    end
+
+    local function GetGradeState()
+        local ok, state = GradeInvoke("GetSlotState")
+
+        if ok and type(state) == "table"
+            and type(state.slots) == "table" then
+            return state
+        end
+
+        return nil
+    end
+
+    local function GetGradeSlot(state, index)
+        return state.slots[index]
+            or state.slots[tostring(index)]
+    end
+
+    local function GradeReady(slot)
+        if slot.Graded == true or slot.Collected == true then
+            return true
+        end
+
+        local start = tonumber(slot.StartTime)
+        local duration = tonumber(
+            slot.RequiredDuration or slot.Duration
+        )
+
+        return start ~= nil
+            and duration ~= nil
+            and workspace:GetServerTimeNow() >= start + duration
+    end
+
+    local function CanAttempt(key, seconds)
+        local now = os.clock()
+
+        if GradeAttempts[key]
+            and now - GradeAttempts[key] < seconds then
+            return false
+        end
+
+        GradeAttempts[key] = now
+        return true
+    end
+
+    local function GradeWorker(runId)
+        while not HubDestroyed
+            and GradeRunning
+            and GradeRunId == runId do
+
+            local ok, err = pcall(function()
+                local state = GetGradeState()
+
+                if not state then
+                    GradeStatus.Text = "Status: Cannot read grading state"
+                    return
+                end
+
+                local unlocked = math.clamp(
+                    tonumber(state.unlockedCount) or 0,
+                    0, 3
+                )
+
+                local descriptions = {}
+                local used = {}
+
+                -- First clear completed slots.
+                for slotIndex = 1, unlocked do
+                    if not GradeRunning
+                        or HubDestroyed
+                        or GradeRunId ~= runId then
+                        return
+                    end
+
+                    local slot = GetGradeSlot(state, slotIndex)
+
+                    if slot then
+                        if GradeReady(slot) then
+                            local key = tostring(
+                                slot.ItemGUID or slotIndex
+                            )
+
+                            if CanAttempt("collect:" .. slotIndex .. ":" .. key, 4) then
+                                GradeInvoke("CollectGrade", slotIndex)
+                                task.wait(0.4)
+                            end
+
+                            if CanAttempt("claim:" .. slotIndex .. ":" .. key, 4) then
+                                GradeInvoke("ClaimGradedItem", slotIndex)
+                                task.wait(0.4)
+                            end
+
+                            descriptions[slotIndex] = "Finishing"
+                        else
+                            descriptions[slotIndex] = "Grading"
+                        end
+                    else
+                        descriptions[slotIndex] = "Empty"
+                    end
+                end
+
+                -- Refresh after collecting and claiming.
+                state = GetGradeState()
+                if not state then return end
+
+                -- Fill empty slots without manual item selection.
+                for slotIndex = 1, unlocked do
+                    if not GradeRunning
+                        or HubDestroyed
+                        or GradeRunId ~= runId then
+                        return
+                    end
+
+                    if not GetGradeSlot(state, slotIndex) then
+                        local candidates = GetCandidates()
+
+                        for _, entry in ipairs(candidates) do
+                            local guid = entry.guid or entry.Guid
+                            local source = entry.source
+                                or entry.Source
+                                or "Inventory"
+
+                            if guid
+                                and not used[tostring(guid)]
+                                and CanAttempt(
+                                    "start:" .. tostring(guid), 8
+                                ) then
+
+                                used[tostring(guid)] = true
+
+                                local started, response = GradeInvoke(
+                                    "StartGrading",
+                                    slotIndex,
+                                    guid,
+                                    source,
+                                    nil
+                                )
+
+                                if started and response ~= false then
+                                    task.wait(0.4)
+
+                                    local updated = GetGradeState()
+
+                                    if updated and GetGradeSlot(updated, slotIndex) then
+                                        descriptions[slotIndex] = "Started"
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+
+                local text = {}
+
+                for i = 1, unlocked do
+                    table.insert(
+                        text,
+                        i .. ": " .. (descriptions[i] or "Empty")
+                    )
+                end
+
+                GradeSlots.Text = "Slots: " ..
+                    table.concat(text, " | ")
+
+                GradeStatus.Text = "Status: Auto Grading ON"
+            end)
+
+            if not ok then
+                GradeStatus.Text = "Grading error: " .. tostring(err)
+            end
+
+            task.wait(1)
+        end
+    end
+
+    CreateToggle(Page, "Auto Grading", "GradeFilterEnabled", function(on)
+        GradeRunning = on
+        GradeRunId += 1
+
+        if on then
+            task.spawn(GradeWorker, GradeRunId)
+        else
+            GradeStatus.Text = "Status: Auto Grading OFF"
+        end
+    end)
+
+    GradeSection("GRADING DIAGNOSTICS")
+
+    CreateActionButton(Page, "Scan Matching Items", function()
+        local candidates = GetCandidates()
+
+        GradeStatus.Text =
+            "Matching gradable items: " .. tostring(#candidates)
+    end)
+
+    CreateActionButton(Page, "Check Grading Slots", function()
+        local state = GetGradeState()
+
+        if not state then
+            GradeSlots.Text = "Unable to read slots"
+            return
+        end
+
+        local text = {}
+
+        for i = 1, tonumber(state.unlockedCount) or 0 do
+            local slot = GetGradeSlot(state, i)
+
+            table.insert(
+                text,
+                i .. ": " .. (
+                    not slot and "Empty"
+                    or GradeReady(slot) and "Ready"
+                    or "Grading"
+                )
+            )
+        end
+
+        GradeSlots.Text = table.concat(text, " | ")
+    end)
+
+    UpdateSelected()
+end
