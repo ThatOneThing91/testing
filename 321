@@ -1,0 +1,926 @@
+
+-- STORAGE HUNTERS | AUTO GRADING V4
+-- Standalone grading GUI
+-- Updated rarity, mutator, and name filters
+-- Preserves V3 grading automation
+
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local UIS = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local Events = RS:WaitForChild("Events")
+local Grading = Events:WaitForChild("Grading")
+local Modules = RS:WaitForChild("Modules")
+
+-- Stop previous versions
+if _G.SHGradingTestStop then
+    pcall(_G.SHGradingTestStop)
+end
+
+for _, guiName in ipairs({
+    "SHAutoGradingTest",
+    "SHGradingV3",
+    "SHGradingV4"
+}) do
+    local previous = playerGui:FindFirstChild(guiName)
+    if previous then
+        previous:Destroy()
+    end
+end
+
+-- Item databases
+local Items = {}
+local MutatorModule = {}
+
+do
+    local ok, result = pcall(function()
+        return require(Modules:WaitForChild("Items"))
+    end)
+
+    if ok and type(result) == "table" then
+        Items = result
+    else
+        warn("[Auto Grading] Failed to load Items module")
+    end
+end
+
+do
+    local ok, result = pcall(function()
+        return require(Modules:WaitForChild("MutatorModule"))
+    end)
+
+    if ok and type(result) == "table" then
+        MutatorModule = result
+    else
+        warn("[Auto Grading] Failed to load MutatorModule")
+    end
+end
+
+local alive = true
+local enabled = false
+local busy = false
+
+local filterMode = "Grade All"
+
+local selected = {
+    rarities = {},
+    mutators = {},
+    names = {}
+}
+
+local attemptMemory = {}
+local messages = {}
+
+local RARITIES = {
+    "Junk",
+    "Uncommon",
+    "Rare",
+    "Epic",
+    "Legendary",
+    "Mythical",
+    "Exclusive"
+}
+
+-- Build the actual mutator list from game modules
+local MUTATORS = {}
+local mutatorSeen = {}
+
+local function addMutator(name)
+    if type(name) ~= "string" or name == "" then
+        return
+    end
+
+    local key = name:lower()
+
+    if not mutatorSeen[key] then
+        mutatorSeen[key] = true
+        table.insert(MUTATORS, name)
+    end
+end
+
+for _, collection in ipairs({
+    MutatorModule.Mutations or {},
+    MutatorModule.MiningMutations or {}
+}) do
+    if type(collection) == "table" then
+        for _, definition in pairs(collection) do
+            if type(definition) == "table" then
+                addMutator(definition.Name)
+            end
+        end
+    end
+end
+
+-- Include special time mutations from the game
+if type(MutatorModule._timeMutationIndex) == "table" then
+    for name in pairs(MutatorModule._timeMutationIndex) do
+        addMutator(name)
+    end
+end
+
+table.sort(MUTATORS, function(a, b)
+    return a:lower() < b:lower()
+end)
+
+local function normalize(value)
+    return tostring(value or ""):lower()
+end
+
+local function make(class, parent, properties)
+    local object = Instance.new(class)
+
+    for key, value in pairs(properties or {}) do
+        object[key] = value
+    end
+
+    object.Parent = parent
+    return object
+end
+
+-- GUI
+local gui = make("ScreenGui", playerGui, {
+    Name = "SHGradingV4",
+    ResetOnSpawn = false
+})
+
+local main = make("Frame", gui, {
+    Size = UDim2.fromOffset(460, 570),
+    Position = UDim2.new(0.5, -230, 0.5, -285),
+    BackgroundColor3 = Color3.fromRGB(24, 24, 29),
+    BorderSizePixel = 0
+})
+
+make("UICorner", main, {
+    CornerRadius = UDim.new(0, 10)
+})
+
+local title = make("TextLabel", main, {
+    Size = UDim2.new(1, -50, 0, 40),
+    BackgroundTransparency = 1,
+    Text = "STORAGE HUNTERS | AUTO GRADING V4",
+    TextColor3 = Color3.new(1, 1, 1),
+    Font = Enum.Font.GothamBold,
+    TextSize = 15
+})
+
+local close = make("TextButton", main, {
+    Size = UDim2.fromOffset(34, 30),
+    Position = UDim2.new(1, -39, 0, 5),
+    BackgroundColor3 = Color3.fromRGB(155, 40, 45),
+    TextColor3 = Color3.new(1, 1, 1),
+    Text = "X"
+})
+make("UICorner", close)
+
+local scroll = make("ScrollingFrame", main, {
+    Size = UDim2.new(1, -20, 1, -215),
+    Position = UDim2.fromOffset(10, 45),
+    BackgroundTransparency = 1,
+    ScrollBarThickness = 4,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y
+})
+
+make("UIListLayout", scroll, {
+    Padding = UDim.new(0, 5),
+    SortOrder = Enum.SortOrder.LayoutOrder
+})
+
+local status = make("TextLabel", main, {
+    Size = UDim2.new(1, -20, 0, 22),
+    Position = UDim2.new(0, 10, 1, -163),
+    BackgroundTransparency = 1,
+    TextColor3 = Color3.fromRGB(185, 230, 185),
+    Font = Enum.Font.Gotham,
+    TextSize = 12,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Text = "Status: Idle"
+})
+
+local slotStatus = make("TextLabel", main, {
+    Size = UDim2.new(1, -20, 0, 22),
+    Position = UDim2.new(0, 10, 1, -141),
+    BackgroundTransparency = 1,
+    TextColor3 = Color3.fromRGB(220, 205, 180),
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Text = "Slots: -"
+})
+
+local log = make("TextBox", main, {
+    Size = UDim2.new(1, -20, 0, 110),
+    Position = UDim2.new(0, 10, 1, -115),
+    BackgroundColor3 = Color3.fromRGB(13, 13, 17),
+    TextColor3 = Color3.fromRGB(205, 230, 205),
+    Font = Enum.Font.Code,
+    TextSize = 11,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+    TextWrapped = true,
+    TextEditable = false,
+    MultiLine = true,
+    ClearTextOnFocus = false,
+    Text = "Ready."
+})
+make("UICorner", log)
+
+local function report(message)
+    if not alive then return end
+
+    table.insert(messages, tostring(message))
+
+    while #messages > 13 do
+        table.remove(messages, 1)
+    end
+
+    log.Text = table.concat(messages, "\n")
+    print("[Auto Grading V4]", message)
+end
+
+local function invoke(name, ...)
+    local remote = Grading:FindFirstChild(name)
+
+    if not remote or not remote:IsA("RemoteFunction") then
+        report("Missing RemoteFunction: " .. name)
+        return false, nil
+    end
+
+    local args = table.pack(...)
+
+    local ok, result = pcall(function()
+        return remote:InvokeServer(
+            table.unpack(args, 1, args.n)
+        )
+    end)
+
+    if not ok then
+        report(name .. " ERROR: " .. tostring(result))
+    end
+
+    return ok, result
+end
+
+local function button(text, callback)
+    local b = make("TextButton", scroll, {
+        Size = UDim2.new(1, -8, 0, 33),
+        BackgroundColor3 = Color3.fromRGB(65, 35, 43),
+        TextColor3 = Color3.new(1, 1, 1),
+        Font = Enum.Font.GothamSemibold,
+        TextSize = 13,
+        Text = text
+    })
+
+    make("UICorner", b, {
+        CornerRadius = UDim.new(0, 6)
+    })
+
+    b.MouseButton1Click:Connect(function()
+        task.spawn(callback)
+    end)
+
+    return b
+end
+
+local function section(text)
+    make("TextLabel", scroll, {
+        Size = UDim2.new(1, -8, 0, 27),
+        BackgroundTransparency = 1,
+        TextColor3 = Color3.fromRGB(255, 145, 145),
+        Font = Enum.Font.GothamBold,
+        TextSize = 14,
+        Text = text
+    })
+end
+
+local function countSelected(tbl)
+    local count = 0
+
+    for _, value in pairs(tbl) do
+        if value then
+            count += 1
+        end
+    end
+
+    return count
+end
+
+local function addFilterGroup(label, options, target)
+    section(label)
+
+    local expanded = false
+    local entries = {}
+
+    local heading
+    heading = button(label .. " (0 selected)", function()
+        expanded = not expanded
+
+        for _, entry in ipairs(entries) do
+            entry.Visible = expanded
+        end
+    end)
+
+    for _, option in ipairs(options) do
+        local entry
+
+        entry = button("[ ] " .. option, function()
+            local key = normalize(option)
+
+            target[key] = not target[key]
+
+            entry.Text =
+                (target[key] and "[X] " or "[ ] ") .. option
+
+            heading.Text = label .. " (" ..
+                countSelected(target) .. " selected)"
+        end)
+
+        entry.Visible = false
+        table.insert(entries, entry)
+    end
+end
+
+-- Resolve item information from ItemId
+local function getItemDetails(entry)
+    if type(entry) ~= "table" then
+        return nil
+    end
+
+    local data = entry.data or entry.Data
+
+    if type(data) ~= "table" then
+        return nil
+    end
+
+    local itemId = data.ItemId or data.itemId
+
+    local definition = Items[itemId]
+        or Items[tostring(itemId)]
+
+    if type(definition) ~= "table" then
+        definition = {}
+    end
+
+    return {
+        id = itemId,
+        name = normalize(definition.Name or data.Name),
+        rarity = normalize(definition.Rarity or data.Rarity),
+        category = normalize(definition.Category),
+        mutators = data.Mutators or data.mutators or {}
+    }
+end
+
+local function hasSelectedMutator(mutators)
+    if type(mutators) ~= "table" then
+        return false
+    end
+
+    for key, value in pairs(mutators) do
+        local mutation
+
+        if type(key) == "number" then
+            if type(value) == "string" then
+                mutation = value
+            elseif type(value) == "table" then
+                mutation = value.Name or value.name
+            end
+        elseif value ~= false and value ~= nil then
+            mutation = key
+        end
+
+        if mutation and selected.mutators[normalize(mutation)] then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function itemMatches(entry)
+    if filterMode == "Grade All" then
+        return true
+    end
+
+    local details = getItemDetails(entry)
+
+    if not details then
+        return false
+    end
+
+    local rarityMatch =
+        selected.rarities[details.rarity] == true
+
+    local nameMatch =
+        selected.names[details.name] == true
+
+    local mutatorMatch =
+        hasSelectedMutator(details.mutators)
+
+    local matches =
+        rarityMatch or nameMatch or mutatorMatch
+
+    local selectedCount =
+        countSelected(selected.rarities)
+        + countSelected(selected.mutators)
+        + countSelected(selected.names)
+
+    if filterMode == "Grade Selected" then
+        if selectedCount == 0 then
+            return false
+        end
+
+        return matches
+    end
+
+    if filterMode == "Exclude Selected" then
+        if selectedCount == 0 then
+            return true
+        end
+
+        return not matches
+    end
+
+    return false
+end
+
+local function getItems()
+    local ok, response = invoke("GetGradableItems")
+
+    if not ok or type(response) ~= "table" then
+        return {}
+    end
+
+    local entries = response.items
+        or response.Items
+        or response
+
+    if type(entries) ~= "table" then
+        return {}
+    end
+
+    local result = {}
+
+    for _, entry in pairs(entries) do
+        if type(entry) == "table" then
+            local guid = entry.guid or entry.Guid
+
+            local source = entry.source
+                or entry.Source
+                or "Inventory"
+
+            if guid and itemMatches(entry) then
+                table.insert(result, {
+                    guid = tostring(guid),
+                    source = source,
+                    details = getItemDetails(entry)
+                })
+            end
+        end
+    end
+
+    return result
+end
+
+local function getState()
+    local ok, response = invoke("GetSlotState")
+
+    if ok
+        and type(response) == "table"
+        and type(response.slots) == "table" then
+        return response
+    end
+
+    return nil
+end
+
+local function getSlot(state, slot)
+    return state.slots[slot]
+        or state.slots[tostring(slot)]
+end
+
+local function remainingTime(info)
+    if type(info) ~= "table" then
+        return nil
+    end
+
+    local start = tonumber(info.StartTime)
+
+    local duration = tonumber(
+        info.RequiredDuration or info.Duration
+    )
+
+    if not start or not duration then
+        return nil
+    end
+
+    return math.max(
+        0,
+        start + duration - workspace:GetServerTimeNow()
+    )
+end
+
+local function attemptAllowed(key, delay)
+    local now = os.clock()
+    local last = attemptMemory[key]
+
+    if last and now - last < delay then
+        return false
+    end
+
+    attemptMemory[key] = now
+    return true
+end
+
+local function verifyEmpty(slot)
+    local state = getState()
+
+    if not state then
+        return false
+    end
+
+    return getSlot(state, slot) == nil
+end
+
+-- Existing V3 occupied-slot processing preserved
+local function handleOccupied(slot, info)
+    local remaining = remainingTime(info)
+
+    if remaining == nil then
+        if attemptAllowed("unknown_" .. slot, 12) then
+            report("Slot " .. slot .. ": unknown timer/state")
+        end
+
+        return "Unknown"
+    end
+
+    if remaining > 0 then
+        return tostring(math.ceil(remaining)) .. "s"
+    end
+
+    local itemKey = tostring(info.ItemGUID or "unknown")
+
+    if attemptAllowed("collect_" .. slot .. "_" .. itemKey, 4) then
+        report("Slot " .. slot .. ": timer done; revealing")
+
+        local ok, result = invoke("CollectGrade", slot)
+
+        if not ok or result == false then
+            report("Slot " .. slot .. ": collect failed")
+            return "Collect retry"
+        end
+
+        task.wait(0.4)
+    end
+
+    if not enabled or not alive then
+        return "Paused"
+    end
+
+    if attemptAllowed("claim_" .. slot .. "_" .. itemKey, 4) then
+        report("Slot " .. slot .. ": claiming")
+
+        local ok, result = invoke("ClaimGradedItem", slot)
+
+        if not ok or result == false then
+            report("Slot " .. slot .. ": claim failed")
+            return "Claim retry"
+        end
+
+        task.wait(0.5)
+
+        if verifyEmpty(slot) then
+            report("Slot " .. slot .. ": cleared successfully")
+            return "Empty"
+        else
+            report("Slot " .. slot ..
+                ": still occupied; retrying")
+            return "Claim retry"
+        end
+    end
+
+    return "Completed"
+end
+
+-- Existing V3 start logic preserved
+local function startItem(slot, used)
+    local items = getItems()
+
+    if #items == 0 then
+        return "No matching items"
+    end
+
+    for _, item in ipairs(items) do
+        if not enabled or not alive then
+            return "Paused"
+        end
+
+        if not used[item.guid]
+            and attemptAllowed(
+                "start_" .. item.guid, 10
+            ) then
+
+            used[item.guid] = true
+
+            report("Slot " .. slot ..
+                ": starting " .. item.guid)
+
+            local ok, result = invoke(
+                "StartGrading",
+                slot,
+                item.guid,
+                item.source,
+                nil
+            )
+
+            if ok and result ~= false then
+                task.wait(0.4)
+
+                local state = getState()
+
+                if state and getSlot(state, slot) ~= nil then
+                    report("Slot " .. slot ..
+                        ": grading started")
+                    return "Started"
+                end
+
+                report("Slot " .. slot ..
+                    ": start not confirmed")
+            end
+        end
+    end
+
+    return "No start"
+end
+
+local function process()
+    local state = getState()
+
+    if not state then
+        status.Text = "Status: Failed to read slots"
+        return
+    end
+
+    local unlocked = math.clamp(
+        tonumber(state.unlockedCount) or 0,
+        0,
+        3
+    )
+
+    local used = {}
+    local display = {}
+
+    for slot = 1, unlocked do
+        if not enabled or not alive then
+            break
+        end
+
+        local info = getSlot(state, slot)
+        local result
+
+        if info == nil then
+            result = startItem(slot, used)
+        else
+            result = handleOccupied(slot, info)
+        end
+
+        table.insert(
+            display,
+            tostring(slot) .. ": " .. tostring(result)
+        )
+    end
+
+    slotStatus.Text = "Slots: " .. table.concat(display, " | ")
+    status.Text = "Status: Auto Grading ON"
+end
+
+-- Automation toggle
+section("AUTOMATION")
+
+local toggle
+toggle = button("AUTO GRADING: OFF", function()
+    enabled = not enabled
+
+    toggle.Text = "AUTO GRADING: " ..
+        (enabled and "ON" or "OFF")
+
+    toggle.BackgroundColor3 = enabled
+        and Color3.fromRGB(35, 115, 65)
+        or Color3.fromRGB(65, 35, 43)
+
+    report("Auto Grading " ..
+        (enabled and "enabled" or "disabled"))
+end)
+
+local modeButton
+modeButton = button("MODE: Grade All", function()
+    if filterMode == "Grade All" then
+        filterMode = "Grade Selected"
+    elseif filterMode == "Grade Selected" then
+        filterMode = "Exclude Selected"
+    else
+        filterMode = "Grade All"
+    end
+
+    modeButton.Text = "MODE: " .. filterMode
+    report("Filter mode: " .. filterMode)
+end)
+
+-- Sorting controls
+section("SORTING FILTERS")
+
+addFilterGroup(
+    "RARITY FILTERS",
+    RARITIES,
+    selected.rarities
+)
+
+addFilterGroup(
+    "MUTATOR FILTERS",
+    MUTATORS,
+    selected.mutators
+)
+
+section("ITEM NAME FILTER")
+
+local nameBox = make("TextBox", scroll, {
+    Size = UDim2.new(1, -8, 0, 32),
+    BackgroundColor3 = Color3.fromRGB(40, 40, 47),
+    TextColor3 = Color3.new(1, 1, 1),
+    PlaceholderText = "Enter exact item name",
+    Text = "",
+    TextSize = 13,
+    ClearTextOnFocus = false
+})
+make("UICorner", nameBox)
+
+button("Add Item Name", function()
+    local name = normalize(
+        nameBox.Text:match("^%s*(.-)%s*$")
+    )
+
+    if name ~= "" then
+        selected.names[name] = true
+        report("Name selected: " .. name)
+        nameBox.Text = ""
+    end
+end)
+
+button("Clear Item Names", function()
+    selected.names = {}
+    report("Name selections cleared")
+end)
+
+section("SELECTED OPTIONS")
+
+button("Show Selected Filters", function()
+    report("Mode: " .. filterMode)
+
+    for name, value in pairs(selected.rarities) do
+        if value then report("Rarity: " .. name) end
+    end
+
+    for name, value in pairs(selected.mutators) do
+        if value then report("Mutator: " .. name) end
+    end
+
+    for name, value in pairs(selected.names) do
+        if value then report("Item: " .. name) end
+    end
+end)
+
+button("Clear All Filters", function()
+    table.clear(selected.rarities)
+    table.clear(selected.mutators)
+    table.clear(selected.names)
+
+    report("All filters cleared")
+    report("Reopen the menu to refresh checkbox labels")
+end)
+
+-- Diagnostics
+section("DIAGNOSTICS")
+
+button("Scan Matching Items", function()
+    local items = getItems()
+
+    report("Matching gradable items: " .. tostring(#items))
+
+    for index = 1, math.min(3, #items) do
+        local details = items[index].details
+
+        if details then
+            report(
+                tostring(details.name) ..
+                " | " .. tostring(details.rarity)
+            )
+        end
+    end
+end)
+
+button("Check Grading Slots", function()
+    local state = getState()
+
+    if not state then
+        report("Failed to read grading slots")
+        return
+    end
+
+    report("Unlocked slots: " .. tostring(state.unlockedCount))
+
+    for slot = 1, 3 do
+        local info = getSlot(state, slot)
+
+        if info == nil then
+            report("Slot " .. slot .. ": empty")
+        else
+            local remaining = remainingTime(info)
+
+            report(
+                "Slot " .. slot .. ": " ..
+                (remaining and
+                    tostring(math.ceil(remaining)) .. "s remaining"
+                    or "unknown")
+            )
+        end
+    end
+end)
+
+button("Clear Debug Log", function()
+    table.clear(messages)
+    log.Text = ""
+end)
+
+-- Cleanup
+local function stop()
+    alive = false
+    enabled = false
+    gui:Destroy()
+end
+
+_G.SHGradingTestStop = stop
+
+close.MouseButton1Click:Connect(stop)
+
+-- Drag support
+local dragging = false
+local dragStart
+local startPosition
+
+title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPosition = main.Position
+    end
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if dragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        local delta = input.Position - dragStart
+
+        main.Position = UDim2.new(
+            startPosition.X.Scale,
+            startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale,
+            startPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+-- Existing V3 automation worker preserved
+task.spawn(function()
+    while alive do
+        if enabled and not busy then
+            busy = true
+
+            local ok, err = pcall(process)
+
+            if not ok then
+                report("Worker error: " .. tostring(err))
+            end
+
+            busy = false
+        end
+
+        task.wait(1)
+    end
+end)
+
+report("Auto Grading V4 loaded")
+report("Item rarity database loaded")
+report("Mutators detected: " .. tostring(#MUTATORS))
+report("Choose filters, then enable Auto Grading")
