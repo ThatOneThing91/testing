@@ -1,0 +1,320 @@
+
+-- Storage Hunters - Grading Test GUI
+-- Standalone testing menu
+-- Does not modify the main Storage Hunters Hub
+
+local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local grading = RS:WaitForChild("Events"):WaitForChild("Grading")
+
+local old = player.PlayerGui:FindFirstChild("GradingTestGUI")
+if old then old:Destroy() end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "GradingTestGUI"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local main = Instance.new("Frame")
+main.Size = UDim2.fromOffset(440, 540)
+main.Position = UDim2.new(0.5, -220, 0.5, -270)
+main.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+main.BorderSizePixel = 0
+main.Parent = gui
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -55, 0, 40)
+title.BackgroundTransparency = 1
+title.Text = "GRADING TEST MENU"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.TextSize = 17
+title.Font = Enum.Font.GothamBold
+title.Parent = main
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.fromOffset(35, 30)
+close.Position = UDim2.new(1, -40, 0, 5)
+close.Text = "X"
+close.BackgroundColor3 = Color3.fromRGB(150, 40, 45)
+close.TextColor3 = Color3.new(1, 1, 1)
+close.Parent = main
+Instance.new("UICorner", close)
+close.MouseButton1Click:Connect(function()
+    gui:Destroy()
+end)
+
+-- Dragging
+local dragging, dragStart, startPos
+title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+    end
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if dragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1, -20, 1, -175)
+scroll.Position = UDim2.fromOffset(10, 45)
+scroll.BackgroundTransparency = 1
+scroll.ScrollBarThickness = 4
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.CanvasSize = UDim2.new()
+scroll.Parent = main
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 6)
+layout.Parent = scroll
+
+local log = Instance.new("TextBox")
+log.Size = UDim2.new(1, -20, 0, 115)
+log.Position = UDim2.new(0, 10, 1, -125)
+log.BackgroundColor3 = Color3.fromRGB(15, 15, 19)
+log.TextColor3 = Color3.fromRGB(210, 230, 210)
+log.Font = Enum.Font.Code
+log.TextSize = 12
+log.TextWrapped = true
+log.TextXAlignment = Enum.TextXAlignment.Left
+log.TextYAlignment = Enum.TextYAlignment.Top
+log.MultiLine = true
+log.ClearTextOnFocus = false
+log.TextEditable = false
+log.Text = "Grading test menu ready."
+log.Parent = main
+Instance.new("UICorner", log)
+
+local function output(message)
+    log.Text = (log.Text .. "\n" .. tostring(message)):sub(-4500)
+    print("[Grading Test]", message)
+end
+
+local function stringify(value, depth)
+    depth = depth or 0
+    if depth > 3 then return "..." end
+    if type(value) ~= "table" then return tostring(value) end
+
+    local parts = {}
+    local count = 0
+    for k, v in pairs(value) do
+        count += 1
+        if count > 20 then
+            table.insert(parts, "...")
+            break
+        end
+        table.insert(parts, tostring(k) .. "=" .. stringify(v, depth + 1))
+    end
+    return "{" .. table.concat(parts, ", ") .. "}"
+end
+
+local function call(remoteName, ...)
+    local remote = grading:FindFirstChild(remoteName)
+    if not remote then
+        output(remoteName .. ": REMOTE MISSING")
+        return nil
+    end
+
+    local args = {...}
+    output("Calling " .. remoteName .. " " .. stringify(args))
+
+    local ok, result = pcall(function()
+        if remote:IsA("RemoteFunction") then
+            return remote:InvokeServer(unpack(args))
+        elseif remote:IsA("RemoteEvent") then
+            remote:FireServer(unpack(args))
+            return "Event fired"
+        else
+            error("Unsupported remote type")
+        end
+    end)
+
+    if ok then
+        output(remoteName .. " -> " .. stringify(result))
+        return result
+    else
+        output("ERROR: " .. tostring(result))
+        return nil
+    end
+end
+
+local function button(label, callback)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -8, 0, 34)
+    b.BackgroundColor3 = Color3.fromRGB(55, 35, 42)
+    b.TextColor3 = Color3.new(1, 1, 1)
+    b.TextSize = 13
+    b.Font = Enum.Font.GothamSemibold
+    b.Text = label
+    b.Parent = scroll
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    b.MouseButton1Click:Connect(function()
+        task.spawn(callback)
+    end)
+    return b
+end
+
+local function section(name)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -8, 0, 28)
+    label.BackgroundTransparency = 1
+    label.Text = name
+    label.TextColor3 = Color3.fromRGB(255, 140, 140)
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 14
+    label.Parent = scroll
+end
+
+local function inputBox(default, placeholder)
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(1, -8, 0, 32)
+    box.BackgroundColor3 = Color3.fromRGB(39, 39, 46)
+    box.TextColor3 = Color3.new(1, 1, 1)
+    box.PlaceholderText = placeholder
+    box.Text = default
+    box.TextSize = 13
+    box.ClearTextOnFocus = false
+    box.Parent = scroll
+    Instance.new("UICorner", box)
+    return box
+end
+
+section("SLOT CONTROL")
+
+local slotInput = inputBox("1", "Slot number (1-3)")
+
+local function selectedSlot()
+    local n = tonumber(slotInput.Text)
+    if n and n >= 1 and n <= 3 and n % 1 == 0 then
+        return n
+    end
+    output("Invalid slot. Choose 1, 2, or 3.")
+    return nil
+end
+
+button("Get All Slot States", function()
+    for slot = 1, 3 do
+        call("GetSlotState", slot)
+    end
+end)
+
+button("Get Selected Slot State", function()
+    local slot = selectedSlot()
+    if slot then call("GetSlotState", slot) end
+end)
+
+section("ITEMS AND GRADING")
+
+local itemInput = inputBox("", "Item UUID from GetGradableItems")
+
+button("Get Gradable Items", function()
+    call("GetGradableItems")
+end)
+
+button("Start Grading (Selected Item)", function()
+    local slot = selectedSlot()
+    local uuid = itemInput.Text
+    if not slot or uuid == "" then
+        output("Enter a slot and item UUID first.")
+        return
+    end
+
+    -- Argument format is provisional
+    call("StartGrading", slot, uuid, "Inventory", nil)
+end)
+
+button("Collect Grade", function()
+    local slot = selectedSlot()
+    if slot then call("CollectGrade", slot) end
+end)
+
+button("Claim Graded Item", function()
+    local slot = selectedSlot()
+    if slot then call("ClaimGradedItem", slot) end
+end)
+
+section("REROLL TESTING")
+
+button("Get Reroll Odds", function()
+    call("GetRerollOdds")
+end)
+
+button("Set Reroll Intent - ON", function()
+    local slot = selectedSlot()
+    if slot then call("SetRerollIntent", slot, true) end
+end)
+
+button("Set Reroll Intent - OFF", function()
+    local slot = selectedSlot()
+    if slot then call("SetRerollIntent", slot, false) end
+end)
+
+button("Use Passive Reroll", function()
+    local slot = selectedSlot()
+    if slot then call("UsePassiveReroll", slot) end
+end)
+
+section("OTHER SLOT ACTIONS")
+
+button("Speed Up Grading", function()
+    local slot = selectedSlot()
+    if slot then call("SpeedUpGrading", slot) end
+end)
+
+button("Unlock Slot", function()
+    local slot = selectedSlot()
+    if slot then call("UnlockSlot", slot) end
+end)
+
+section("MONITOR")
+
+local monitoring = false
+
+button("Toggle Slot Monitor (2 seconds)", function()
+    monitoring = not monitoring
+    output("Slot monitor: " .. (monitoring and "ON" or "OFF"))
+
+    if monitoring then
+        task.spawn(function()
+            while monitoring and gui.Parent do
+                for slot = 1, 3 do
+                    if not monitoring then break end
+                    call("GetSlotState", slot)
+                end
+                task.wait(2)
+            end
+        end)
+    end
+end)
+
+local rerollConnection = grading:FindFirstChild("GradeRerolled")
+if rerollConnection and rerollConnection:IsA("RemoteEvent") then
+    rerollConnection.OnClientEvent:Connect(function(...)
+        output("GradeRerolled EVENT: " .. stringify({...}))
+    end)
+end
+
+output("All 11 grading remotes registered.")
