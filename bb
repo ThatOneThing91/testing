@@ -1,0 +1,6988 @@
+--==============================================================
+-- STORAGE HUNTERS HUB
+-- COMPLETE TEST BUILD
+--==============================================================
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+--==============================================================
+-- SERVICES
+--==============================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+
+--==============================================================
+-- SINGLE-INSTANCE / OLD-HUB SHUTDOWN
+--==============================================================
+
+-- Keep the running hub's shutdown function outside this script instance.
+-- If the hub is executed again, the new copy calls the old shutdown first,
+-- which stops its loops/connections before creating the replacement GUI.
+local HubEnvironment = getgenv and getgenv() or _G
+local HubInstanceKey = "__StorageHuntersHubInstance"
+
+local PreviousHub = HubEnvironment[HubInstanceKey]
+
+if type(PreviousHub) == "table"
+    and type(PreviousHub.Destroy) == "function" then
+
+    pcall(PreviousHub.Destroy)
+    task.wait()
+end
+
+-- Also remove any orphaned GUI left by an older build that did not have
+-- the single-instance shutdown registry.
+pcall(function()
+    for _, child in ipairs(CoreGui:GetChildren()) do
+        if child.Name == "StorageHuntersHub" then
+            child:Destroy()
+        end
+    end
+end)
+
+--==============================================================
+-- MASTER STATE
+--==============================================================
+
+local HubDestroyed = false
+local ThisHubInstance = {}
+
+HubEnvironment[HubInstanceKey] = ThisHubInstance
+
+local State = {
+    AutoDailyRewards = false,
+    AutoOpenSafes = false,
+    AutoBasketball = false,
+    HayCollector = false,
+    TreeKnocker = false,
+    PoliceAuction = false,
+    AutoWash = false,
+    AutoRepair = false,
+    AutoMuseumGift = false,
+
+    AutoBid = false,
+    InstantUnload = false,
+    PauseAuction = false,
+    LostFoundUnloader = false,
+    Farming = false,
+
+    -- Tests tab filter prototype state only.
+    -- These currently control the UI/filter configuration and do NOT
+    -- fire any grading or selling remotes.
+    GradeFilterEnabled = false,
+    SellFilterEnabled = false,
+    FilterProtectFavorites = true,
+
+    SelectedArea = "The Mines",
+    SelectedAuction = "Mine Bunker",
+
+    HubVisible = true,
+}
+
+local RunIds = {
+    Basketball = 0,
+    Hay = 0,
+    Trees = 0,
+    Police = 0,
+    Wash = 0,
+    Repair = 0,
+    MuseumGift = 0,
+    Farming = 0,
+    Unload = 0,
+    LostFound = 0,
+}
+
+local Connections = {}
+
+local function TrackConnection(connection)
+    table.insert(Connections, connection)
+    return connection
+end
+
+--==============================================================
+-- COLORS
+--==============================================================
+
+local ThemeColor = Color3.fromRGB(125, 25, 25)
+local DarkBackground = Color3.fromRGB(25, 25, 28)
+local DarkerBackground = Color3.fromRGB(18, 18, 21)
+local ButtonBackground = Color3.fromRGB(35, 35, 39)
+local OffColor = Color3.fromRGB(55, 55, 60)
+local TextColor = Color3.fromRGB(240, 240, 240)
+local MutedText = Color3.fromRGB(160, 160, 165)
+
+--==============================================================
+-- AUCTION AREAS
+--==============================================================
+
+local AreaAuctions = {
+    ["The Mines"] = {
+        "Mine Bunker",
+        "Ore Hopper Depot",
+        "Prospector's Shack",
+        "Twin Drill Rig",
+    },
+
+    ["Back Alley"] = {
+        "Camo Shop Front",
+        "Shop Front",
+    },
+
+    ["Business Bay"] = {
+        "High End Apartment",
+        "Luxury Hotel",
+        "The Pointer",
+    },
+
+    ["Farmyard"] = {
+        "Stable Garage",
+        "Barn Garage",
+    },
+
+    ["Junk Yard"] = {
+        "Scrap Garage 2",
+        "Scrap Garage 3",
+    },
+
+    ["Lucky Beach"] = {
+        "Beach Hut Garage",
+        "Surf Shack Garage",
+        "Boat House Garage",
+    },
+
+    ["Power Plant"] = {
+        "Power Plant Tier 1 Garage",
+        "Power Plant Tier 2 Garage",
+        "Power Plant Tier 3 Garage",
+        "Power Plant Tier 4 Garage",
+    },
+
+    ["Shipyard"] = {
+        "Small Container Garage",
+        "Warehouse Garage",
+        "Large Container Garage",
+    },
+
+    ["Cargo Ship"] = {
+        "Cargo Container",
+        "Luxury Cargo Container",
+        "Steel Cargo Container",
+        "Wooden Cargo Container",
+    },
+
+    ["Cargo Train"] = {
+        "Train Container 1",
+        "Train Container 2",
+        "Train Container 3",
+        "Train Container 4",
+    },
+}
+
+local AreaNames = {
+    "The Mines",
+    "Back Alley",
+    "Business Bay",
+    "Farmyard",
+    "Junk Yard",
+    "Lucky Beach",
+    "Power Plant",
+    "Shipyard",
+    "Cargo Ship",
+    "Cargo Train",
+}
+
+--==============================================================
+-- NOTIFICATION
+--==============================================================
+
+local function Notify(title, text, duration)
+    if HubDestroyed then
+        return
+    end
+
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title,
+            Text = text,
+            Duration = duration or 2,
+        })
+    end)
+end
+
+--==============================================================
+-- GUI HELPERS
+--==============================================================
+
+local function New(className, properties, parent)
+    local object = Instance.new(className)
+
+    for property, value in pairs(properties or {}) do
+        object[property] = value
+    end
+
+    object.Parent = parent
+
+    return object
+end
+
+local function Corner(parent, radius)
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, radius or 6)
+    corner.Parent = parent
+    return corner
+end
+
+local function Stroke(parent, color, thickness)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = color
+    stroke.Thickness = thickness or 1
+    stroke.Parent = parent
+    return stroke
+end
+
+local function Padding(parent, amount)
+    local padding = Instance.new("UIPadding")
+
+    padding.PaddingTop = UDim.new(0, amount)
+    padding.PaddingBottom = UDim.new(0, amount)
+    padding.PaddingLeft = UDim.new(0, amount)
+    padding.PaddingRight = UDim.new(0, amount)
+
+    padding.Parent = parent
+
+    return padding
+end
+
+local function Layout(parent, spacing)
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, spacing or 6)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = parent
+    return layout
+end
+
+--==============================================================
+-- CHARACTER
+--==============================================================
+
+local function GetCharacter()
+    return LocalPlayer.Character
+end
+
+local function GetRoot()
+    local character = GetCharacter()
+
+    if not character then
+        return nil
+    end
+
+    return character:FindFirstChild("HumanoidRootPart")
+end
+
+--==============================================================
+-- GARAGE HELPERS
+--==============================================================
+
+-- The physical garage from the auction that just finished can remain in
+-- _Debris for a while. Never let that stale instance block a newly spawned
+-- garage with the same selected garage NAME.
+local FarmingCompletedGarage = nil
+local AuctionWonSerial = 0
+
+local function GetGaragesFolder()
+    local debris = workspace:FindFirstChild("_Debris")
+
+    if not debris then
+        return nil
+    end
+
+    return debris:FindFirstChild("Garages")
+end
+
+local function GetGarageByNameForArea(areaName, garageName)
+    local garages = GetGaragesFolder()
+
+    if garages then
+        -- Multiple physical auctions can use the same garage name/type.
+        -- Search every spawned instance instead of locking onto FindFirstChild.
+        for _, garage in ipairs(garages:GetChildren()) do
+            if garage.Name == garageName
+                and garage ~= FarmingCompletedGarage then
+
+                return garage
+            end
+        end
+    end
+
+    local areas = workspace:FindFirstChild("Areas")
+
+    if areas then
+        local area = areas:FindFirstChild(areaName)
+
+        if area then
+            for _, object in ipairs(area:GetDescendants()) do
+                if object.Name == garageName
+                    and object ~= FarmingCompletedGarage then
+
+                    return object
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function GetGarageEntry(garage)
+    if not garage then
+        return nil
+    end
+
+    return garage:FindFirstChild("EntrySquare", true)
+end
+
+local function GetGaragePrompt(garage)
+    if not garage then
+        return nil
+    end
+
+    local entry = GetGarageEntry(garage)
+
+    if entry then
+        local prompt = entry:FindFirstChild("EnterAuction", true)
+
+        if prompt and prompt:IsA("ProximityPrompt") then
+            return prompt
+        end
+    end
+
+    local prompt = garage:FindFirstChild("EnterAuction", true)
+
+    if prompt and prompt:IsA("ProximityPrompt") then
+        return prompt
+    end
+
+    return nil
+end
+
+local function GetGarageDestination(garage)
+    local entry = GetGarageEntry(garage)
+
+    if not entry then
+        return nil
+    end
+
+    local promptPart = entry:FindFirstChild("PromptPart", true)
+
+    if promptPart and promptPart:IsA("BasePart") then
+        return promptPart
+    end
+
+    return entry:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function TeleportToGarage(garage)
+    local root = GetRoot()
+    local destination = GetGarageDestination(garage)
+
+    if not root or not destination then
+        return false
+    end
+
+    root.CFrame = destination.CFrame + Vector3.new(0, 3, 0)
+
+    return true
+end
+
+local function FireGaragePrompt(garage)
+    local prompt = GetGaragePrompt(garage)
+
+    if not prompt then
+        return false
+    end
+
+    pcall(function()
+        prompt.HoldDuration = 0
+    end)
+
+    if typeof(fireproximityprompt) == "function" then
+        local success = pcall(function()
+            fireproximityprompt(prompt)
+        end)
+
+        return success
+    end
+
+    if typeof(firePrompt) == "function" then
+        local success = pcall(function()
+            firePrompt(prompt)
+        end)
+
+        return success
+    end
+
+    pcall(function()
+        prompt:InputHoldBegin()
+        task.wait(0.05)
+        prompt:InputHoldEnd()
+    end)
+
+    return true
+end
+
+--==============================================================
+-- MONEY / AFFORDABILITY
+--==============================================================
+
+local MoneyNames = {
+    "Cash",
+    "Money",
+    "Coins",
+    "Currency",
+    "Balance",
+    "Dollars",
+    "Credits",
+}
+
+local PriceNames = {
+    "Price",
+    "Cost",
+    "AuctionPrice",
+    "StartingPrice",
+    "StartPrice",
+    "BidPrice",
+    "EntryPrice",
+}
+
+local function ParseNumber(value)
+    if typeof(value) == "number" then
+        return value
+    end
+
+    if typeof(value) ~= "string" then
+        return nil
+    end
+
+    local cleaned = value:gsub(",", "")
+    local number = cleaned:match("[%d]+%.?[%d]*")
+
+    return tonumber(number)
+end
+
+local function GetObjectNumber(object)
+    if not object then
+        return nil
+    end
+
+    if object:IsA("IntValue") or object:IsA("NumberValue") then
+        return object.Value
+    end
+
+    if object:IsA("StringValue") then
+        return ParseNumber(object.Value)
+    end
+
+    return nil
+end
+
+local function GetPlayerMoney()
+    for _, name in ipairs(MoneyNames) do
+        local value = LocalPlayer:GetAttribute(name)
+
+        if typeof(value) == "number" then
+            return value
+        end
+    end
+
+    local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+
+    if leaderstats then
+        for _, name in ipairs(MoneyNames) do
+            local object = leaderstats:FindFirstChild(name)
+
+            local value = GetObjectNumber(object)
+
+            if value ~= nil then
+                return value
+            end
+        end
+    end
+
+    for _, object in ipairs(LocalPlayer:GetDescendants()) do
+        for _, name in ipairs(MoneyNames) do
+            if object.Name:lower() == name:lower() then
+                local value = GetObjectNumber(object)
+
+                if value ~= nil then
+                    return value
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function GetGaragePrice(garage)
+    if not garage then
+        return nil
+    end
+
+    for _, name in ipairs(PriceNames) do
+        local value = garage:GetAttribute(name)
+        local parsed = ParseNumber(value)
+
+        if parsed ~= nil then
+            return parsed
+        end
+    end
+
+    for _, object in ipairs(garage:GetDescendants()) do
+        local lowerName = object.Name:lower()
+
+        local possiblePrice =
+            lowerName:find("price", 1, true)
+            or lowerName:find("cost", 1, true)
+
+        if possiblePrice then
+            local value = GetObjectNumber(object)
+
+            if value ~= nil then
+                return value
+            end
+
+            if object:IsA("TextLabel")
+                or object:IsA("TextButton")
+                or object:IsA("TextBox") then
+
+                local parsed = ParseNumber(object.Text)
+
+                if parsed ~= nil then
+                    return parsed
+                end
+            end
+        end
+
+        for _, name in ipairs(PriceNames) do
+            local value = object:GetAttribute(name)
+            local parsed = ParseNumber(value)
+
+            if parsed ~= nil then
+                return parsed
+            end
+        end
+    end
+
+    return nil
+end
+
+local function CanAffordGarage(garage)
+    if not garage then
+        return false
+    end
+
+    local prompt = GetGaragePrompt(garage)
+
+    if prompt and prompt.Enabled == false then
+        return false
+    end
+
+    local price = GetGaragePrice(garage)
+    local money = GetPlayerMoney()
+
+    if price ~= nil and money ~= nil then
+        return money >= price
+    end
+
+    -- Unknown price/currency:
+    -- allow the attempt rather than incorrectly
+    -- marking a valid garage as unaffordable.
+    return true
+end
+
+--==============================================================
+-- GUI
+--==============================================================
+
+local Gui = New("ScreenGui", {
+    Name = "StorageHuntersHub",
+    ResetOnSpawn = false,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, CoreGui)
+
+local Main = New("Frame", {
+    Name = "Main",
+    Size = UDim2.fromOffset(380, 430),
+    Position = UDim2.new(0.5, -190, 0.5, -215),
+    BackgroundColor3 = DarkBackground,
+    BorderSizePixel = 0,
+}, Gui)
+
+Corner(Main, 10)
+
+local MainStroke = Stroke(Main, ThemeColor, 2)
+
+--==============================================================
+-- TITLE
+--==============================================================
+
+local TitleBar = New("Frame", {
+    Size = UDim2.new(1, 0, 0, 42),
+    BackgroundColor3 = DarkerBackground,
+    BorderSizePixel = 0,
+}, Main)
+
+Corner(TitleBar, 10)
+
+New("TextLabel", {
+    Size = UDim2.new(1, -145, 1, 0),
+    Position = UDim2.fromOffset(12, 0),
+    BackgroundTransparency = 1,
+    Text = "SCRIPT HUB",
+    TextColor3 = TextColor,
+    TextSize = 16,
+    Font = Enum.Font.GothamBold,
+    TextXAlignment = Enum.TextXAlignment.Left,
+}, TitleBar)
+
+local ThemeButton = New("TextButton", {
+    Size = UDim2.fromOffset(34, 28),
+    Position = UDim2.new(1, -106, 0, 7),
+    BackgroundColor3 = ButtonBackground,
+    Text = "🎨",
+    TextColor3 = TextColor,
+    TextSize = 16,
+    BorderSizePixel = 0,
+}, TitleBar)
+
+Corner(ThemeButton, 7)
+
+local MinimizeButton = New("TextButton", {
+    Size = UDim2.fromOffset(34, 28),
+    Position = UDim2.new(1, -72, 0, 7),
+    BackgroundColor3 = ButtonBackground,
+    Text = "—",
+    TextColor3 = TextColor,
+    TextSize = 18,
+    BorderSizePixel = 0,
+}, TitleBar)
+
+Corner(MinimizeButton, 7)
+
+local CloseButton = New("TextButton", {
+    Size = UDim2.fromOffset(34, 28),
+    Position = UDim2.new(1, -38, 0, 7),
+    BackgroundColor3 = ButtonBackground,
+    Text = "×",
+    TextColor3 = TextColor,
+    TextSize = 20,
+    BorderSizePixel = 0,
+}, TitleBar)
+
+Corner(CloseButton, 7)
+
+--==============================================================
+-- DRAGGING
+--==============================================================
+
+do
+    local dragging = false
+    local dragStart
+    local startPosition
+
+    TrackConnection(
+        TitleBar.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+
+                dragging = true
+                dragStart = input.Position
+                startPosition = Main.Position
+
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then
+                        dragging = false
+                    end
+                end)
+            end
+        end)
+    )
+
+    TrackConnection(
+        UserInputService.InputChanged:Connect(function(input)
+            if HubDestroyed or not dragging then
+                return
+            end
+
+            if input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch then
+
+                local delta = input.Position - dragStart
+
+                Main.Position = UDim2.new(
+                    startPosition.X.Scale,
+                    startPosition.X.Offset + delta.X,
+                    startPosition.Y.Scale,
+                    startPosition.Y.Offset + delta.Y
+                )
+            end
+        end)
+    )
+end
+
+--==============================================================
+-- TAB BAR
+--==============================================================
+
+local TabBar = New("Frame", {
+    Size = UDim2.new(1, -20, 0, 34),
+    Position = UDim2.fromOffset(10, 48),
+    BackgroundTransparency = 1,
+}, Main)
+
+local MainTabButton = New("TextButton", {
+    Size = UDim2.new(0.2, -3, 1, 0),
+    BackgroundColor3 = ThemeColor,
+    Text = "Main",
+    TextColor3 = TextColor,
+    TextSize = 13,
+    Font = Enum.Font.GothamBold,
+    BorderSizePixel = 0,
+}, TabBar)
+
+Corner(MainTabButton, 6)
+
+local FarmingTabButton = New("TextButton", {
+    Size = UDim2.new(0.2, -3, 1, 0),
+    Position = UDim2.new(0.2, 1, 0, 0),
+    BackgroundColor3 = ButtonBackground,
+    Text = "Farming",
+    TextColor3 = TextColor,
+    TextSize = 13,
+    Font = Enum.Font.GothamBold,
+    BorderSizePixel = 0,
+}, TabBar)
+
+Corner(FarmingTabButton, 6)
+
+local ShopTabButton = New("TextButton", {
+    Size = UDim2.new(0.2, -3, 1, 0),
+    Position = UDim2.new(0.4, 2, 0, 0),
+    BackgroundColor3 = ButtonBackground,
+    Text = "Shop",
+    TextColor3 = TextColor,
+    TextSize = 13,
+    Font = Enum.Font.GothamBold,
+    BorderSizePixel = 0,
+}, TabBar)
+
+Corner(ShopTabButton, 6)
+
+local TestsTabButton = New("TextButton", {
+    Size = UDim2.new(0.2, -3, 1, 0),
+    Position = UDim2.new(0.6, 3, 0, 0),
+    BackgroundColor3 = ButtonBackground,
+    Text = "Quick Sell",
+    TextColor3 = TextColor,
+    TextSize = 13,
+    Font = Enum.Font.GothamBold,
+    BorderSizePixel = 0,
+}, TabBar)
+
+Corner(TestsTabButton, 6)
+
+ThisHubInstance.TestsExtraTabButton = New("TextButton", {
+    Size = UDim2.new(0.2, -3, 1, 0),
+    Position = UDim2.new(0.8, 4, 0, 0),
+    BackgroundColor3 = ButtonBackground,
+    Text = "Tests",
+    TextColor3 = TextColor,
+    TextSize = 13,
+    Font = Enum.Font.GothamBold,
+    BorderSizePixel = 0,
+}, TabBar)
+
+Corner(ThisHubInstance.TestsExtraTabButton, 6)
+
+--==============================================================
+-- PAGES
+--==============================================================
+
+local MainPage = New("ScrollingFrame", {
+    Size = UDim2.new(1, -20, 1, -94),
+    Position = UDim2.fromOffset(10, 88),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+}, Main)
+
+Padding(MainPage, 4)
+Layout(MainPage, 7)
+
+local FarmingPage = New("ScrollingFrame", {
+    Size = UDim2.new(1, -20, 1, -94),
+    Position = UDim2.fromOffset(10, 88),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    Visible = false,
+}, Main)
+
+Padding(FarmingPage, 4)
+Layout(FarmingPage, 7)
+
+local ShopPage = New("ScrollingFrame", {
+    Size = UDim2.new(1, -20, 1, -94),
+    Position = UDim2.fromOffset(10, 88),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    Visible = false,
+}, Main)
+
+Padding(ShopPage, 4)
+Layout(ShopPage, 7)
+
+local TestsPage = New("ScrollingFrame", {
+    Size = UDim2.new(1, -20, 1, -94),
+    Position = UDim2.fromOffset(10, 88),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    Visible = false,
+}, Main)
+
+Padding(TestsPage, 4)
+Layout(TestsPage, 7)
+
+ThisHubInstance.TestsExtraPage = New("ScrollingFrame", {
+    Size = UDim2.new(1, -20, 1, -94),
+    Position = UDim2.fromOffset(10, 88),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    CanvasSize = UDim2.new(),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    Visible = false,
+}, Main)
+
+Padding(ThisHubInstance.TestsExtraPage, 4)
+Layout(ThisHubInstance.TestsExtraPage, 7)
+
+--==============================================================
+-- TOGGLE SYSTEM
+--==============================================================
+
+local ToggleObjects = {}
+
+local function CreateToggle(parent, text, stateKey, callback)
+    local holder = New("Frame", {
+        Size = UDim2.new(1, -8, 0, 42),
+        BackgroundColor3 = ButtonBackground,
+        BorderSizePixel = 0,
+    }, parent)
+
+    Corner(holder, 7)
+
+    New("TextLabel", {
+        Size = UDim2.new(1, -80, 1, 0),
+        Position = UDim2.fromOffset(12, 0),
+        BackgroundTransparency = 1,
+        Text = text,
+        TextColor3 = TextColor,
+        TextSize = 13,
+        Font = Enum.Font.GothamMedium,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, holder)
+
+    local button = New("TextButton", {
+        Size = UDim2.fromOffset(58, 28),
+        Position = UDim2.new(1, -68, 0.5, -14),
+        BackgroundColor3 = OffColor,
+        Text = "OFF",
+        TextColor3 = TextColor,
+        TextSize = 11,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+    }, holder)
+
+    Corner(button, 14)
+
+    local function Update(value)
+        State[stateKey] = value
+
+        button.Text = value and "ON" or "OFF"
+        button.BackgroundColor3 = value and ThemeColor or OffColor
+    end
+
+    TrackConnection(
+        button.MouseButton1Click:Connect(function()
+            if HubDestroyed then
+                return
+            end
+
+            local newValue = not State[stateKey]
+
+            Update(newValue)
+
+            if callback then
+                task.spawn(callback, newValue)
+            end
+        end)
+    )
+
+    ToggleObjects[stateKey] = Update
+
+    Update(State[stateKey])
+
+    return holder
+end
+
+--==============================================================
+-- AUTO BID STATUS ROW
+--==============================================================
+
+local AutoBidStatusLabel
+
+local function UpdateAutoBidStatus()
+    if not AutoBidStatusLabel then
+        return
+    end
+
+    if State.AutoBid then
+        AutoBidStatusLabel.Text = "ON"
+        AutoBidStatusLabel.BackgroundColor3 = ThemeColor
+    else
+        AutoBidStatusLabel.Text = "OFF"
+        AutoBidStatusLabel.BackgroundColor3 = OffColor
+    end
+end
+
+local function CreateAutoBidStatus(parent)
+    local holder = New("Frame", {
+        Size = UDim2.new(1, -8, 0, 52),
+        BackgroundColor3 = ButtonBackground,
+        BorderSizePixel = 0,
+    }, parent)
+
+    Corner(holder, 7)
+
+    New("TextLabel", {
+        Size = UDim2.new(1, -90, 0, 23),
+        Position = UDim2.fromOffset(12, 5),
+        BackgroundTransparency = 1,
+        Text = "Auto Bid",
+        TextColor3 = TextColor,
+        TextSize = 13,
+        Font = Enum.Font.GothamMedium,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, holder)
+
+    New("TextLabel", {
+        Size = UDim2.new(1, -90, 0, 17),
+        Position = UDim2.fromOffset(12, 28),
+        BackgroundTransparency = 1,
+        Text = "Press P to toggle",
+        TextColor3 = MutedText,
+        TextSize = 10,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, holder)
+
+    AutoBidStatusLabel = New("TextLabel", {
+        Size = UDim2.fromOffset(58, 28),
+        Position = UDim2.new(1, -68, 0.5, -14),
+        BackgroundColor3 = OffColor,
+        Text = "OFF",
+        TextColor3 = TextColor,
+        TextSize = 11,
+        Font = Enum.Font.GothamBold,
+        BorderSizePixel = 0,
+    }, holder)
+
+    Corner(AutoBidStatusLabel, 14)
+
+    UpdateAutoBidStatus()
+end
+
+--==============================================================
+-- DROPDOWN
+--==============================================================
+
+local DropdownOverlay = New("Frame", {
+    Size = UDim2.fromScale(1, 1),
+    BackgroundTransparency = 1,
+    Visible = false,
+    ZIndex = 200,
+}, Gui)
+
+local OpenDropdownClose = nil
+
+local function CloseDropdown()
+    if OpenDropdownClose then
+        OpenDropdownClose()
+        OpenDropdownClose = nil
+    end
+end
+
+local function CreateDropdown(parent, title, initialValue, initialOptions, callback)
+    local holder = New("Frame", {
+        Size = UDim2.new(1, -8, 0, 62),
+        BackgroundColor3 = ButtonBackground,
+        BorderSizePixel = 0,
+    }, parent)
+
+    Corner(holder, 7)
+
+    New("TextLabel", {
+        Size = UDim2.new(1, -12, 0, 20),
+        Position = UDim2.fromOffset(10, 5),
+        BackgroundTransparency = 1,
+        Text = title,
+        TextColor3 = MutedText,
+        TextSize = 11,
+        Font = Enum.Font.GothamMedium,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, holder)
+
+    local button = New("TextButton", {
+        Size = UDim2.new(1, -16, 0, 29),
+        Position = UDim2.fromOffset(8, 28),
+        BackgroundColor3 = DarkerBackground,
+        Text = tostring(initialValue or "None"),
+        TextColor3 = TextColor,
+        TextSize = 12,
+        Font = Enum.Font.GothamMedium,
+        BorderSizePixel = 0,
+    }, holder)
+
+    Corner(button, 5)
+
+    local currentValue = initialValue
+    local options = {}
+
+    for _, option in ipairs(initialOptions or {}) do
+        table.insert(options, option)
+    end
+
+    local object = {}
+
+    function object:Get()
+        return currentValue
+    end
+
+    function object:Set(value)
+        currentValue = value
+        button.Text = tostring(value or "None")
+    end
+
+    function object:SetOptions(newOptions, selected)
+        options = {}
+
+        for _, option in ipairs(newOptions or {}) do
+            table.insert(options, option)
+        end
+
+        if selected ~= nil then
+            currentValue = selected
+        elseif #options > 0 then
+            currentValue = options[1]
+        else
+            currentValue = "No auctions found"
+        end
+
+        button.Text = tostring(currentValue)
+    end
+
+    TrackConnection(
+        button.MouseButton1Click:Connect(function()
+            if HubDestroyed or #options == 0 then
+                return
+            end
+
+            CloseDropdown()
+
+            local frameHeight = math.min(280, (#options * 32) + 8)
+
+            local optionsFrame = New("ScrollingFrame", {
+                Size = UDim2.fromOffset(
+                    math.max(180, holder.AbsoluteSize.X),
+                    frameHeight
+                ),
+                Position = UDim2.fromOffset(
+                    holder.AbsolutePosition.X,
+                    holder.AbsolutePosition.Y + holder.AbsoluteSize.Y + 3
+                ),
+                BackgroundColor3 = DarkerBackground,
+                BorderSizePixel = 0,
+                ZIndex = 210,
+
+                -- Keep long dropdowns inside the bordered box.
+                ClipsDescendants = true,
+                CanvasSize = UDim2.fromOffset(0, 0),
+                AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                ScrollingDirection = Enum.ScrollingDirection.Y,
+                ScrollBarThickness = 5,
+                ElasticBehavior = Enum.ElasticBehavior.Never,
+            }, DropdownOverlay)
+
+            Corner(optionsFrame, 6)
+            Stroke(optionsFrame, ThemeColor, 1)
+
+            Padding(optionsFrame, 4)
+            Layout(optionsFrame, 3)
+
+            local closed = false
+
+            local function Close()
+                if closed then
+                    return
+                end
+
+                closed = true
+
+                if optionsFrame then
+                    optionsFrame:Destroy()
+                end
+
+                DropdownOverlay.Visible = false
+
+                if OpenDropdownClose == Close then
+                    OpenDropdownClose = nil
+                end
+            end
+
+            OpenDropdownClose = Close
+            DropdownOverlay.Visible = true
+
+            for _, option in ipairs(options) do
+                local optionButton = New("TextButton", {
+                    Size = UDim2.new(1, 0, 0, 29),
+                    BackgroundColor3 =
+                        option == currentValue and ThemeColor or ButtonBackground,
+                    Text = tostring(option),
+                    TextColor3 = TextColor,
+                    TextSize = 12,
+                    Font = Enum.Font.GothamMedium,
+                    BorderSizePixel = 0,
+                    ZIndex = 211,
+                }, optionsFrame)
+
+                Corner(optionButton, 5)
+
+                optionButton.MouseButton1Click:Connect(function()
+                    currentValue = option
+                    button.Text = tostring(option)
+
+                    Close()
+
+                    if callback then
+                        callback(option)
+                    end
+                end)
+            end
+        end)
+    )
+
+    return object
+end
+
+--==============================================================
+-- ACTION BUTTON
+--==============================================================
+
+local function CreateActionButton(parent, text, callback)
+    local button = New("TextButton", {
+        Size = UDim2.new(1, -8, 0, 42),
+        BackgroundColor3 = ButtonBackground,
+        Text = text,
+        TextColor3 = TextColor,
+        TextSize = 13,
+        Font = Enum.Font.GothamMedium,
+        BorderSizePixel = 0,
+    }, parent)
+
+    Corner(button, 7)
+
+    TrackConnection(
+        button.MouseButton1Click:Connect(function()
+            if not HubDestroyed then
+                task.spawn(callback)
+            end
+        end)
+    )
+
+    return button
+end
+
+--==============================================================
+-- AUTO BASKETBALL
+--==============================================================
+
+local function StartBasketball(runId)
+    task.spawn(function()
+        local positioned = false
+
+        while not HubDestroyed
+            and State.AutoBasketball
+            and RunIds.Basketball == runId do
+
+            local root = GetRoot()
+
+            local ball = workspace:FindFirstChild("ThatOneThing91")
+                and workspace.ThatOneThing91:FindFirstChild("Basketball")
+
+            local hoop
+            pcall(function()
+                hoop = workspace["BBOW Builder Assets"]
+                    ["Other Buildings and  Decoration"]
+                    ["Basket Ball "]:GetChildren()[2].Ring
+            end)
+
+            if root and ball and hoop then
+                if not positioned then
+                    root.CFrame = CFrame.new(-274, 1723, -590)
+                    positioned = true
+                    task.wait(0.5)
+                end
+
+                -- Face the EXACT hoop Ring immediately before every shot.
+                -- Use the Ring's full 3D position so the shot is aimed at it.
+                local rootPosition = root.Position
+                local hoopPosition = hoop.Position
+
+                if (hoopPosition - rootPosition).Magnitude > 0 then
+                    root.CFrame = CFrame.lookAt(
+                        rootPosition,
+                        hoopPosition
+                    )
+                end
+
+                task.wait(0.1)
+
+                if HubDestroyed
+                    or not State.AutoBasketball
+                    or RunIds.Basketball ~= runId then
+                    break
+                end
+
+                pcall(function()
+                    ball:Activate()
+                end)
+
+                task.wait(1)
+
+                pcall(function()
+                    ball:Deactivate()
+                end)
+
+                task.wait(0.5)
+            else
+                positioned = false
+                task.wait(1)
+            end
+        end
+    end)
+end
+
+CreateToggle(MainPage, "Auto Basketball", "AutoBasketball", function(enabled)
+    RunIds.Basketball += 1
+
+    if enabled then
+        StartBasketball(RunIds.Basketball)
+    end
+end)
+
+--==============================================================
+-- HAY COLLECTOR
+-- EXACT TARGETS
+--==============================================================
+
+local HayTargetOrder = {
+    320,
+    390,
+    229,
+    368,
+    "Hay",
+    358,
+    341,
+    323,
+    412,
+    301,
+    468,
+}
+
+local function GetTreesFolder()
+    local assets = workspace:FindFirstChild("BBOW Builder Assets")
+
+    if not assets then
+        return nil
+    end
+
+    local buildings = assets:FindFirstChild("Other Buildings and  Decoration")
+
+    if not buildings then
+        return nil
+    end
+
+    return buildings:FindFirstChild("Trees")
+end
+
+local function StartHayCollector(runId)
+    task.spawn(function()
+        while not HubDestroyed
+            and State.HayCollector
+            and RunIds.Hay == runId do
+
+            local trees = GetTreesFolder()
+
+            if not trees then
+                task.wait(1)
+                continue
+            end
+
+            local children = trees:GetChildren()
+
+            for _, targetKey in ipairs(HayTargetOrder) do
+                if HubDestroyed
+                    or not State.HayCollector
+                    or RunIds.Hay ~= runId then
+                    return
+                end
+
+                local target
+
+                if typeof(targetKey) == "number" then
+                    target = children[targetKey]
+                else
+                    target = trees:FindFirstChild(targetKey)
+                end
+
+                if target then
+                    local root = GetRoot()
+
+                    if root then
+                        local success, pivot = pcall(function()
+                            return target:GetPivot()
+                        end)
+
+                        if success and pivot then
+                            root.CFrame = pivot + Vector3.new(0, 3, 0)
+                        end
+                    end
+                end
+
+                task.wait(0.15)
+            end
+        end
+    end)
+end
+
+CreateToggle(MainPage, "Hay Knocker", "HayCollector", function(enabled)
+    RunIds.Hay += 1
+
+    if enabled then
+        StartHayCollector(RunIds.Hay)
+    end
+end)
+
+--==============================================================
+-- TREE KNOCKER
+--==============================================================
+
+local TreeItemOrder = {
+    8,
+    "Apple Tree",
+    4,
+    2,
+    6,
+    5,
+    7,
+    3,
+}
+
+local function StartTreeKnocker(runId)
+    task.spawn(function()
+        while not HubDestroyed
+            and State.TreeKnocker
+            and RunIds.Trees == runId do
+
+            local trees = GetTreesFolder()
+
+            if not trees then
+                task.wait(1)
+                continue
+            end
+
+            local folders = {}
+
+            for _, folder in ipairs(trees:GetChildren()) do
+                if folder:FindFirstChild("Apple Tree") then
+                    table.insert(folders, folder)
+                end
+            end
+
+            local targets = {}
+
+            for _, folder in ipairs(folders) do
+                local children = folder:GetChildren()
+
+                for _, itemIndex in ipairs(TreeItemOrder) do
+                    local item
+
+                    if typeof(itemIndex) == "number" then
+                        item = children[itemIndex]
+                    else
+                        item = folder:FindFirstChild(itemIndex)
+                    end
+
+                    if item then
+                        table.insert(targets, item)
+                    end
+                end
+            end
+
+            for _, target in ipairs(targets) do
+                if HubDestroyed
+                    or not State.TreeKnocker
+                    or RunIds.Trees ~= runId then
+                    return
+                end
+
+                local root = GetRoot()
+
+                if root then
+                    local success, pivot = pcall(function()
+                        return target:GetPivot()
+                    end)
+
+                    if success and pivot then
+                        root.CFrame = pivot + Vector3.new(0, 3, 0)
+                    end
+                end
+
+                task.wait(0.15)
+            end
+        end
+    end)
+end
+
+CreateToggle(MainPage, "Tree Knocker", "TreeKnocker", function(enabled)
+    RunIds.Trees += 1
+
+    if enabled then
+        StartTreeKnocker(RunIds.Trees)
+    end
+end)
+
+--==============================================================
+-- POLICE AUCTION
+--==============================================================
+
+local PoliceKnown = {}
+local PoliceHandled = {}
+
+local function IsPoliceGarage(garage)
+    return garage
+        and garage.Parent
+        and garage:FindFirstChild("PoliceWarning", true) ~= nil
+end
+
+local function StartPoliceGarage(garage, runId)
+    if HubDestroyed
+        or not State.PoliceAuction
+        or RunIds.Police ~= runId
+        or PoliceHandled[garage] then
+        return
+    end
+
+    PoliceHandled[garage] = true
+
+    task.spawn(function()
+        for attempt = 1, 5 do
+            if HubDestroyed
+                or not State.PoliceAuction
+                or RunIds.Police ~= runId then
+                return
+            end
+
+            if not garage or not garage.Parent then
+                return
+            end
+
+            local root = GetRoot()
+            local destination = GetGarageDestination(garage)
+            local prompt = GetGaragePrompt(garage)
+
+            if root and destination then
+                root.CFrame = destination.CFrame + Vector3.new(0, 3, 0)
+
+                task.wait(0.4)
+
+                if prompt then
+                    pcall(function()
+                        prompt.HoldDuration = 0
+                    end)
+
+                    FireGaragePrompt(garage)
+                    return
+                end
+            end
+
+            task.wait(0.5)
+        end
+
+        -- Allow another future attempt if the prompt
+        -- wasn't streamed in during these attempts.
+        PoliceHandled[garage] = nil
+    end)
+end
+
+local function RegisterPoliceGarage(garage)
+    if HubDestroyed or not IsPoliceGarage(garage) then
+        return
+    end
+
+    if not PoliceKnown[garage] then
+        PoliceKnown[garage] = true
+
+        if State.PoliceAuction then
+            Notify("Police Auction", "Found: " .. garage.Name, 3)
+        end
+    end
+
+    if State.PoliceAuction and not PoliceHandled[garage] then
+        StartPoliceGarage(garage, RunIds.Police)
+    end
+end
+
+local function ScanPoliceGarages()
+    local garages = GetGaragesFolder()
+
+    if not garages then
+        return
+    end
+
+    for _, garage in ipairs(garages:GetChildren()) do
+        RegisterPoliceGarage(garage)
+    end
+end
+
+task.spawn(function()
+    local garages
+
+    while not HubDestroyed and not garages do
+        garages = GetGaragesFolder()
+
+        if not garages then
+            task.wait(1)
+        end
+    end
+
+    if HubDestroyed or not garages then
+        return
+    end
+
+    TrackConnection(
+        garages.ChildAdded:Connect(function(garage)
+            if HubDestroyed then
+                return
+            end
+
+            task.wait(0.15)
+            RegisterPoliceGarage(garage)
+        end)
+    )
+
+    TrackConnection(
+        garages.DescendantAdded:Connect(function(descendant)
+            if HubDestroyed or descendant.Name ~= "PoliceWarning" then
+                return
+            end
+
+            local current = descendant
+
+            while current and current.Parent ~= garages do
+                current = current.Parent
+            end
+
+            if current and current.Parent == garages then
+                RegisterPoliceGarage(current)
+            end
+        end)
+    )
+end)
+
+local function StartPoliceDetector(runId)
+    task.spawn(function()
+        ScanPoliceGarages()
+
+        while not HubDestroyed
+            and State.PoliceAuction
+            and RunIds.Police == runId do
+
+            -- No scan notifications.
+            -- Scan only makes sure streamed garages are discovered.
+            ScanPoliceGarages()
+
+            task.wait(2)
+        end
+    end)
+end
+
+CreateToggle(MainPage, "Police Auction", "PoliceAuction", function(enabled)
+    RunIds.Police += 1
+
+    if enabled then
+        PoliceHandled = {}
+        StartPoliceDetector(RunIds.Police)
+    end
+end)
+
+--==============================================================
+-- AUTO WASH
+-- Uses the confirmed-working GetWashableItems washer flow.
+-- Broken items are rejected before StartWash.
+--==============================================================
+
+local WashEvents = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Wash")
+
+local GetSlotState = WashEvents:WaitForChild("GetSlotState")
+local GetWashableItems = WashEvents:WaitForChild("GetWashableItems")
+local StartWash = WashEvents:WaitForChild("StartWash")
+local CollectWash = WashEvents:WaitForChild("CollectWash")
+local ClaimWashedItem = WashEvents:WaitForChild("ClaimWashedItem")
+
+local WASH_LOOP_DELAY = 1
+local WASH_ACTION_DELAY = 0.35
+local WashRejectedGuids = {}
+
+local function WashTableContainsWord(value, wanted, depth, seen)
+    wanted = string.lower(wanted)
+    depth = depth or 0
+    seen = seen or {}
+
+    if depth > 6 then
+        return false
+    end
+
+    if type(value) == "string" then
+        return string.lower(value) == wanted
+    end
+
+    if type(value) ~= "table" or seen[value] then
+        return false
+    end
+
+    seen[value] = true
+
+    for key, child in pairs(value) do
+        if type(key) == "string"
+            and string.lower(key) == wanted
+            and child ~= false
+            and child ~= nil then
+            return true
+        end
+
+        if type(child) == "string" and string.lower(child) == wanted then
+            return true
+        end
+
+        if type(child) == "table"
+            and WashTableContainsWord(child, wanted, depth + 1, seen) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function WashItemGuid(item)
+    if type(item) ~= "table" then
+        return nil
+    end
+
+    return item.guid or item.GUID or item.Guid
+        or item.uuid or item.UUID
+        or item.itemGuid or item.ItemGuid
+        or item.itemGUID or item.ItemGUID
+        or item.id or item.Id or item.ID
+end
+
+local function WashItemIsBroken(item)
+    if type(item) ~= "table" then
+        return false
+    end
+
+    local condition = tostring(
+        item.Condition
+        or item.condition
+        or ""
+    ):lower()
+
+    if condition == "broken" then
+        return true
+    end
+
+    return WashTableContainsWord(item, "Broken")
+end
+
+local function ReadWashState()
+    local ok, result = pcall(function()
+        return GetSlotState:InvokeServer()
+    end)
+
+    if not ok or type(result) ~= "table" then
+        return nil
+    end
+
+    return result
+end
+
+local function ReadWashableItems()
+    local ok, result = pcall(function()
+        return GetWashableItems:InvokeServer()
+    end)
+
+    if not ok or type(result) ~= "table" then
+        return {}
+    end
+
+    local items = result.items or result.Items
+
+    if type(items) ~= "table" then
+        return {}
+    end
+
+    return items
+end
+
+local function ChooseWashItem(items, usedGuids)
+    if type(items) ~= "table" then
+        return nil
+    end
+
+    -- Keep the working script's Mint-first preference.
+    for _, item in ipairs(items) do
+        local guid = WashItemGuid(item)
+        local guidKey = guid and tostring(guid) or nil
+        local condition = tostring(
+            item.Condition
+            or item.condition
+            or ""
+        ):lower()
+
+        if guidKey
+            and not usedGuids[guidKey]
+            and not WashRejectedGuids[guidKey]
+            and not WashItemIsBroken(item)
+            and condition == "mint" then
+            return item
+        end
+    end
+
+    -- Otherwise use the next server-approved washable item,
+    -- but never send a Broken item to StartWash.
+    for _, item in ipairs(items) do
+        local guid = WashItemGuid(item)
+        local guidKey = guid and tostring(guid) or nil
+
+        if guidKey
+            and not usedGuids[guidKey]
+            and not WashRejectedGuids[guidKey]
+            and not WashItemIsBroken(item) then
+            return item
+        end
+    end
+
+    return nil
+end
+
+local function StartWashItem(slotIndex, item)
+    local guid = WashItemGuid(item)
+
+    if not guid then
+        return false
+    end
+
+    local guidKey = tostring(guid)
+
+    -- Final hard stop immediately before the remote call.
+    if WashItemIsBroken(item) then
+        WashRejectedGuids[guidKey] = true
+        return false
+    end
+
+    local ok, result = pcall(function()
+        return StartWash:InvokeServer(
+            slotIndex,
+            guid,
+            item.source,
+            item.vehicleGUID
+        )
+    end)
+
+    if not ok then
+        -- Do not hammer the same rejected GUID every second.
+        WashRejectedGuids[guidKey] = true
+        return false
+    end
+
+    if type(result) == "table" and result.success == false then
+        WashRejectedGuids[guidKey] = true
+        return false
+    end
+
+    return true
+end
+
+local function CollectWashSlot(slotIndex)
+    local ok = pcall(function()
+        CollectWash:InvokeServer(slotIndex)
+    end)
+
+    return ok
+end
+
+local function ClaimWashSlot(slotIndex)
+    local ok, result = pcall(function()
+        return ClaimWashedItem:InvokeServer(slotIndex)
+    end)
+
+    if not ok then
+        return false
+    end
+
+    if type(result) == "table" and result.success == false then
+        return false
+    end
+
+    return true
+end
+
+local function ProcessAutoWash(runId)
+    if HubDestroyed or not State.AutoWash or RunIds.Wash ~= runId then
+        return
+    end
+
+    local state = ReadWashState()
+
+    if type(state) ~= "table" then
+        return
+    end
+
+    local unlockedCount = tonumber(state.unlockedCount) or 1
+    unlockedCount = math.clamp(unlockedCount, 1, 3)
+
+    local slots = state.slots
+
+    if type(slots) ~= "table" then
+        return
+    end
+
+    local usedGuids = {}
+
+    -- PASS 1: clear completed/finished slots using the working flow.
+    for slotIndex = 1, unlockedCount do
+        if HubDestroyed or not State.AutoWash or RunIds.Wash ~= runId then
+            return
+        end
+
+        local slotData = slots[tostring(slotIndex)] or slots[slotIndex]
+
+        if slotData then
+            if slotData.Washed == true then
+                ClaimWashSlot(slotIndex)
+                task.wait(WASH_ACTION_DELAY)
+            else
+                local now = workspace:GetServerTimeNow()
+                local startTime = tonumber(slotData.StartTime) or now
+                local duration = tonumber(slotData.Duration) or 0
+                local elapsed = now - startTime
+                local remaining = duration - elapsed
+
+                if remaining <= 0 then
+                    CollectWashSlot(slotIndex)
+                    task.wait(WASH_ACTION_DELAY)
+                end
+            end
+        end
+    end
+
+    task.wait(0.4)
+
+    if HubDestroyed or not State.AutoWash or RunIds.Wash ~= runId then
+        return
+    end
+
+    -- PASS 2: re-read state after collect/claim.
+    state = ReadWashState()
+
+    if type(state) ~= "table" or type(state.slots) ~= "table" then
+        return
+    end
+
+    slots = state.slots
+    unlockedCount = math.clamp(
+        tonumber(state.unlockedCount) or unlockedCount,
+        1,
+        3
+    )
+
+    -- PASS 3: fill every empty unlocked slot.
+    for slotIndex = 1, unlockedCount do
+        if HubDestroyed or not State.AutoWash or RunIds.Wash ~= runId then
+            return
+        end
+
+        local slotData = slots[tostring(slotIndex)] or slots[slotIndex]
+
+        if not slotData then
+            -- Refresh for every slot exactly like the working standalone script.
+            local washableItems = ReadWashableItems()
+            local item = ChooseWashItem(washableItems, usedGuids)
+
+            if item then
+                local guid = WashItemGuid(item)
+                local guidKey = guid and tostring(guid) or nil
+
+                if guidKey then
+                    usedGuids[guidKey] = true
+                end
+
+                if StartWashItem(slotIndex, item) then
+                    task.wait(0.5)
+                end
+            end
+        end
+    end
+end
+
+local function StartAutoWash(runId)
+    task.spawn(function()
+        while not HubDestroyed
+            and State.AutoWash
+            and RunIds.Wash == runId do
+
+            pcall(function()
+                ProcessAutoWash(runId)
+            end)
+
+            task.wait(WASH_LOOP_DELAY)
+        end
+    end)
+end
+
+CreateToggle(ShopPage, "Auto Wash", "AutoWash", function(enabled)
+    RunIds.Wash += 1
+
+    if enabled then
+        -- A fresh toggle gets a fresh rejection cache.
+        WashRejectedGuids = {}
+        StartAutoWash(RunIds.Wash)
+    end
+end)
+
+--==============================================================
+-- AUTO REPAIR
+-- Fresh inventory scan before EVERY repair.
+-- Finds items with the "Broken" mutator.
+-- Uses the inventory TABLE KEY as the current GUID.
+-- Waits for the wrench repair before finding the next.
+--==============================================================
+
+local WrenchShop = ReplicatedStorage:WaitForChild("Events"):WaitForChild("WrenchShop")
+local RepairInventoryEvents = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Inventory")
+local RepairGetPlayerInventory = RepairInventoryEvents:WaitForChild("GetPlayerInventory")
+local RepairWithWrench = WrenchShop:WaitForChild("RepairWithWrench")
+
+-- RepairWithWrench is an InvokeServer call, so it already waits for the
+-- server response. Do not add the old fixed 5.25-second delay afterward.
+local REPAIR_WAIT = 0.15
+local EMPTY_REPAIR_SCAN_WAIT = 0.35
+
+local function GetRepairInventory()
+    local ok, result = pcall(function()
+        return RepairGetPlayerInventory:InvokeServer()
+    end)
+
+    if not ok then
+        warn("[AUTO REPAIR] Inventory request failed:", result)
+        return nil
+    end
+
+    return result
+end
+
+local function RepairContainsBroken(value, depth, visited)
+    depth = depth or 0
+    visited = visited or {}
+
+    if depth > 8 or type(value) ~= "table" or visited[value] then
+        return false
+    end
+
+    visited[value] = true
+
+    for key, data in pairs(value) do
+        local keyLower = tostring(key):lower()
+
+        if keyLower == "broken" and data == true then
+            return true
+        end
+
+        if (keyLower == "condition" or keyLower == "status" or keyLower == "state")
+            and type(data) == "string"
+            and data:lower() == "broken" then
+            return true
+        end
+
+        if keyLower == "mutators" and type(data) == "table" then
+            for mutatorName, mutatorValue in pairs(data) do
+                if tostring(mutatorName):lower() == "broken" and mutatorValue ~= false then
+                    return true
+                end
+
+                if type(mutatorValue) == "string" and mutatorValue:lower() == "broken" then
+                    return true
+                end
+
+                if type(mutatorValue) == "table" then
+                    local name = mutatorValue.Name
+                        or mutatorValue.name
+                        or mutatorValue.Mutator
+                        or mutatorValue.mutator
+
+                    if name and tostring(name):lower() == "broken" then
+                        return true
+                    end
+                end
+            end
+        end
+
+        if type(data) == "table"
+            and RepairContainsBroken(data, depth + 1, visited) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function FindBrokenRepairItem()
+    local inventory = GetRepairInventory()
+
+    if type(inventory) ~= "table" then
+        return nil, nil
+    end
+
+    for guid, item in pairs(inventory) do
+        if type(item) == "table" and RepairContainsBroken(item) then
+            return guid, item
+        end
+    end
+
+    return nil, nil
+end
+
+local function RepairCurrentItem(guid, runId)
+    if HubDestroyed or not State.AutoRepair or RunIds.Repair ~= runId then
+        return false
+    end
+
+    local startedAt = os.clock()
+
+    local ok, result = pcall(function()
+        return RepairWithWrench:InvokeServer(guid)
+    end)
+
+    if not ok then
+        warn("[AUTO REPAIR] RepairWithWrench failed:", guid, result)
+        return false
+    end
+
+    local elapsed = os.clock() - startedAt
+    local remaining = REPAIR_WAIT - elapsed
+
+    if remaining > 0 then
+        task.wait(remaining)
+    else
+        task.wait(0.15)
+    end
+
+    return true
+end
+
+local function StartAutoRepair(runId)
+    task.spawn(function()
+        while not HubDestroyed
+            and State.AutoRepair
+            and RunIds.Repair == runId do
+
+            local guid = FindBrokenRepairItem()
+
+            if guid then
+                RepairCurrentItem(guid, runId)
+            else
+                task.wait(EMPTY_REPAIR_SCAN_WAIT)
+            end
+        end
+    end)
+end
+
+CreateToggle(ShopPage, "Auto Repair", "AutoRepair", function(enabled)
+    RunIds.Repair += 1
+
+    if enabled then
+        StartAutoRepair(RunIds.Repair)
+    end
+end)
+
+CreateToggle(ShopPage, "Auto Open Safes", "AutoOpenSafes", function(enabled)
+    State.AutoOpenSafes = enabled
+
+    if not enabled then
+        return
+    end
+
+    task.spawn(function()
+        while task.wait(5) do
+            if not State.AutoOpenSafes or HubDestroyed then
+                break
+            end
+
+            local processedGuids = {}
+            local EV = game:GetService("ReplicatedStorage"):WaitForChild("Events")
+
+            if State.AutoOpenSafes then
+                pcall(function()
+                    local lsEv = EV:WaitForChild("Locksmith")
+                    local res = lsEv:WaitForChild("GetSlotState"):InvokeServer()
+                    local unlockedCount = (res and res.unlockedCount) or 1
+                    local slots = res and res.slots
+
+                    if slots then
+                        for slotIndex = 1, 3 do
+                            if slotIndex <= unlockedCount then
+                                local slotData = slots[tostring(slotIndex)]
+
+                                if not slotData then
+                                    local ok, eligibleRes = pcall(function()
+                                        return lsEv:WaitForChild("GetLockableItems"):InvokeServer()
+                                    end)
+
+                                    local eligible = ok and eligibleRes and eligibleRes.items
+
+                                    if eligible and (#eligible > 0) then
+                                        local chosenItem = nil
+
+                                        for _, item in ipairs(eligible) do
+                                            if not processedGuids[item.guid] then
+                                                chosenItem = item
+                                                break
+                                            end
+                                        end
+
+                                        if chosenItem then
+                                            processedGuids[chosenItem.guid] = true
+
+                                            pcall(function()
+                                                lsEv:WaitForChild("StartLocksmith"):InvokeServer(
+                                                    slotIndex,
+                                                    chosenItem.guid,
+                                                    chosenItem.source,
+                                                    chosenItem.vehicleGUID
+                                                )
+                                            end)
+
+                                            task.wait(0.5)
+                                        end
+                                    end
+                                else
+                                    local elapsed =
+                                        workspace:GetServerTimeNow()
+                                        - (slotData.StartTime or workspace:GetServerTimeNow())
+
+                                    local remaining =
+                                        (slotData.Duration or 0) - elapsed
+
+                                    if remaining <= 0 then
+                                        pcall(function()
+                                            lsEv:WaitForChild("OpenSafe"):InvokeServer(slotIndex)
+                                        end)
+
+                                        task.wait(0.3)
+
+                                        local ok, r = pcall(function()
+                                            return lsEv:WaitForChild("ClaimItem"):InvokeServer(slotIndex)
+                                        end)
+
+                                        if ok then
+                                            task.wait(0.5)
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end)
+            end
+        end
+    end)
+end)
+
+CreateToggle(ShopPage, "Auto Collect Daily Rewards", "AutoDailyRewards", function(enabled)
+    State.AutoDailyRewards = enabled
+
+    if not enabled then
+        return
+    end
+
+    task.spawn(function()
+        local ClaimDailyReward = ReplicatedStorage
+            :WaitForChild("Events")
+            :WaitForChild("DailyReward")
+            :WaitForChild("ClaimDailyReward")
+
+        while State.AutoDailyRewards and not HubDestroyed do
+            pcall(function()
+                ClaimDailyReward:InvokeServer()
+            end)
+
+            task.wait(5)
+        end
+    end)
+end)
+
+
+--==============================================================
+-- AUTO COLLECT MUSEUM GIFT
+-- Confirmed game call:
+-- Events.Museum.Collect:InvokeServer(1)
+-- The hourly gift is checked once every 5 minutes.
+--==============================================================
+
+local MuseumEvents = ReplicatedStorage
+    :WaitForChild("Events")
+    :WaitForChild("Museum")
+
+local MuseumCollect = MuseumEvents
+    :WaitForChild("Collect")
+
+local function CollectMuseumGift(runId)
+    if HubDestroyed
+        or not State.AutoMuseumGift
+        or RunIds.MuseumGift ~= runId then
+        return
+    end
+
+    local callOk, collected, reward = pcall(function()
+        return MuseumCollect:InvokeServer(1)
+    end)
+
+    if callOk and collected == true then
+        local rewardText = "Hourly museum gift collected"
+
+        if type(reward) == "table" then
+            local rewardType = reward.Type
+            local rewardAmount = reward.Amount
+
+            if rewardType ~= nil and rewardAmount ~= nil then
+                rewardText =
+                    "Collected "
+                    .. tostring(rewardAmount)
+                    .. " "
+                    .. tostring(rewardType)
+            elseif rewardType ~= nil then
+                rewardText =
+                    "Collected "
+                    .. tostring(rewardType)
+            end
+        end
+
+        Notify(
+            "Museum Gift",
+            rewardText,
+            3
+        )
+    end
+end
+
+local function StartAutoMuseumGift(runId)
+    task.spawn(function()
+        while not HubDestroyed
+            and State.AutoMuseumGift
+            and RunIds.MuseumGift == runId do
+
+            -- Check immediately when the toggle is enabled.
+            CollectMuseumGift(runId)
+
+            -- Then check only once every 5 minutes.
+            local waitStart = os.clock()
+
+            while not HubDestroyed
+                and State.AutoMuseumGift
+                and RunIds.MuseumGift == runId
+                and os.clock() - waitStart < 300 do
+
+                task.wait(1)
+            end
+        end
+    end)
+end
+
+local MuseumGiftToggle = CreateToggle(
+    ShopPage,
+    "Auto Collect Museum Gift",
+    "AutoMuseumGift",
+    function(enabled)
+        RunIds.MuseumGift += 1
+
+        if enabled then
+            StartAutoMuseumGift(RunIds.MuseumGift)
+        end
+    end
+)
+
+-- Keep this control at the top of the Shop tab so it is easy to find.
+MuseumGiftToggle.LayoutOrder = -100
+
+--==============================================================
+-- AUTO UNFAVORITE
+-- One-shot action button.
+-- Each click reads the full inventory, toggles every discovered
+-- item UUID once, then stops automatically.
+--==============================================================
+
+local AutoUnfavoriteEvents = ReplicatedStorage
+    :WaitForChild("Events")
+    :WaitForChild("Inventory")
+
+local AutoUnfavoriteGetInventory = AutoUnfavoriteEvents:WaitForChild("GetPlayerInventory")
+local AutoUnfavoriteToggleFavorite = AutoUnfavoriteEvents:WaitForChild("ToggleFavoriteItem")
+
+local AutoUnfavoriteRunning = false
+
+local function AutoUnfavoriteIsUUID(value)
+    return type(value) == "string"
+        and value:match(
+            "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+        ) ~= nil
+end
+
+local function AutoUnfavoriteGetItemId(key, value)
+    if type(value) == "string" and AutoUnfavoriteIsUUID(value) then
+        return value
+    end
+
+    if type(key) == "string" and AutoUnfavoriteIsUUID(key) then
+        return key
+    end
+
+    return nil
+end
+
+local function AutoUnfavoriteCollectIds(value, results, seen)
+    if type(value) ~= "table" or seen[value] then
+        return
+    end
+
+    seen[value] = true
+
+    for key, child in pairs(value) do
+        local id = AutoUnfavoriteGetItemId(key, child)
+
+        if id then
+            results[id] = true
+        end
+
+        if type(child) == "table" then
+            AutoUnfavoriteCollectIds(child, results, seen)
+        end
+    end
+end
+
+local function AutoUnfavoriteGetAllItemIds()
+    local success, inventory = pcall(function()
+        return AutoUnfavoriteGetInventory:InvokeServer()
+    end)
+
+    if not success then
+        warn("[AUTO UNFAVORITE] GetPlayerInventory failed:", inventory)
+        return nil
+    end
+
+    local ids = {}
+    AutoUnfavoriteCollectIds(inventory, ids, {})
+    return ids
+end
+
+local function RunAutoUnfavoriteOnce()
+    if AutoUnfavoriteRunning or HubDestroyed then
+        if AutoUnfavoriteRunning then
+            Notify("Auto Unfavorite", "Already processing inventory.", 2)
+        end
+        return
+    end
+
+    AutoUnfavoriteRunning = true
+
+    task.spawn(function()
+        local ids = AutoUnfavoriteGetAllItemIds()
+
+        if HubDestroyed then
+            AutoUnfavoriteRunning = false
+            return
+        end
+
+        if not ids then
+            AutoUnfavoriteRunning = false
+            Notify("Auto Unfavorite", "Couldn't read inventory.", 3)
+            return
+        end
+
+        local list = {}
+        for id in pairs(ids) do
+            list[#list + 1] = id
+        end
+
+        Notify("Auto Unfavorite", "Processing " .. tostring(#list) .. " items...", 2)
+
+        local completed = 0
+
+        for _, itemId in ipairs(list) do
+            if HubDestroyed then
+                break
+            end
+
+            local success, result = pcall(function()
+                return AutoUnfavoriteToggleFavorite:InvokeServer(itemId)
+            end)
+
+            if success then
+                completed += 1
+                print("[AUTO UNFAVORITE]", completed, "/", #list, itemId, result)
+            else
+                warn("[AUTO UNFAVORITE] Failed:", itemId, result)
+            end
+
+            task.wait(0.08)
+        end
+
+        AutoUnfavoriteRunning = false
+
+        if not HubDestroyed then
+            Notify(
+                "Auto Unfavorite",
+                "DONE - processed " .. tostring(completed) .. "/" .. tostring(#list) .. " items.",
+                3
+            )
+        end
+    end)
+end
+
+CreateActionButton(MainPage, "Favorite Toggle", function()
+    RunAutoUnfavoriteOnce()
+end)
+
+--==============================================================
+-- INSTANT AUCTION ENTRY
+--==============================================================
+
+local function MakePromptInstant(prompt)
+    if prompt
+        and prompt:IsA("ProximityPrompt")
+        and prompt.Name == "EnterAuction" then
+
+        pcall(function()
+            prompt.HoldDuration = 0
+        end)
+    end
+end
+
+local function ScanInstantAuctionPrompts()
+    local garages = GetGaragesFolder()
+
+    if not garages then
+        return 0
+    end
+
+    local count = 0
+
+    for _, descendant in ipairs(garages:GetDescendants()) do
+        if descendant:IsA("ProximityPrompt")
+            and descendant.Name == "EnterAuction" then
+
+            MakePromptInstant(descendant)
+            count += 1
+        end
+    end
+
+    return count
+end
+
+CreateActionButton(MainPage, "Instant Auction Entry", function()
+    local count = ScanInstantAuctionPrompts()
+
+    Notify(
+        "Instant Auction Entry",
+        "Updated " .. tostring(count) .. " auction prompts.",
+        2
+    )
+end)
+
+task.spawn(function()
+    local garages
+
+    while not HubDestroyed and not garages do
+        garages = GetGaragesFolder()
+
+        if not garages then
+            task.wait(1)
+        end
+    end
+
+    if HubDestroyed or not garages then
+        return
+    end
+
+    ScanInstantAuctionPrompts()
+
+    TrackConnection(
+        garages.DescendantAdded:Connect(function(descendant)
+            if HubDestroyed then
+                return
+            end
+
+            if descendant:IsA("ProximityPrompt")
+                and descendant.Name == "EnterAuction" then
+
+                MakePromptInstant(descendant)
+            end
+        end)
+    )
+end)
+
+--==============================================================
+-- AUCTION UI
+--==============================================================
+
+local function GetAuctionContainer()
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+
+    if not playerGui then
+        return nil
+    end
+
+    local ui = playerGui:FindFirstChild("UIControllerGui")
+
+    if not ui then
+        return nil
+    end
+
+    return ui:FindFirstChild("AuctionBiddingContainer")
+end
+
+local function AuctionIsOpen()
+    local container = GetAuctionContainer()
+
+    return container ~= nil and container.Visible == true
+end
+
+local function GetBidButton()
+    local container = GetAuctionContainer()
+
+    if not container or not container.Visible then
+        return nil
+    end
+
+    local button = container:FindFirstChild("BidButton", true)
+
+    if button
+        and button:IsA("GuiButton")
+        and button.Visible
+        and button.Active then
+
+        return button
+    end
+
+    return nil
+end
+
+--==============================================================
+-- AUCTION REMOTES
+--==============================================================
+
+local AuctionEvents = ReplicatedStorage
+    :WaitForChild("Events")
+    :WaitForChild("Auction")
+
+local BidEvent = AuctionEvents:WaitForChild("Bid")
+
+local RequestAuctionPause =
+    AuctionEvents:WaitForChild("RequestAuctionPause")
+
+--==============================================================
+-- WAIT FOR AUCTION TO START
+--==============================================================
+
+local function WaitForAuctionStart(runId, timeout)
+    local start = os.clock()
+
+    while not HubDestroyed
+        and State.Farming
+        and RunIds.Farming == runId
+        and os.clock() - start < timeout do
+
+        if AuctionIsOpen() and GetBidButton() then
+            -- Bid UI exists: proceed immediately.
+            return true
+        end
+
+        task.wait(0.02)
+    end
+
+    return false
+end
+
+--==============================================================
+-- AUTO BID
+-- PROVEN STANDALONE LOGIC
+-- P TOGGLES THIS ON / OFF
+--==============================================================
+
+local AutoBidLoopRunning = false
+
+local function StartAutoBidLoop()
+    if AutoBidLoopRunning then
+        return
+    end
+
+    AutoBidLoopRunning = true
+
+    task.spawn(function()
+        while not HubDestroyed and State.AutoBid do
+            local button = GetBidButton()
+
+            if button and button:IsA("GuiButton") then
+                if button.Visible and button.Active then
+                    pcall(function()
+                        BidEvent:FireServer()
+                    end)
+
+                    task.wait(0.3)
+                else
+                    task.wait(0.1)
+                end
+            else
+                -- No auction active yet. Stay alive so the
+                -- next auction is automatically detected.
+                task.wait(0.2)
+            end
+        end
+
+        AutoBidLoopRunning = false
+    end)
+end
+
+--==============================================================
+-- PAUSE AUCTION
+-- PROVEN REMOTE: RequestAuctionPause:FireServer(true)
+-- INDEPENDENT OF FARMING / AUTO BID
+--==============================================================
+
+local PauseWatcherStarted = false
+
+-- While auto farming, this points at the garage whose auction
+-- is currently being handled. It is used only to return to the
+-- entry square for the FIRST bid.
+local FarmingBidGarage = nil
+local FarmingBidRunId = 0
+local FarmingWaitingGarage = nil
+
+-- Unlike FarmingBidGarage, this survives the first bid/pause sequence.
+-- We need it at "Auction Won" time so the completed physical garage can be
+-- ignored immediately even if it remains spawned for several more seconds.
+local FarmingCurrentGarage = nil
+
+local function TeleportToBidEntrySquare()
+    if HubDestroyed
+        or not State.Farming
+        or FarmingBidGarage == nil
+        or RunIds.Farming ~= FarmingBidRunId then
+        return false
+    end
+
+    -- TeleportToGarage already targets the EntrySquare's PromptPart
+    -- (or another BasePart inside EntrySquare as a fallback).
+    return TeleportToGarage(FarmingBidGarage)
+end
+
+
+local function GetNextGarageAfter(currentGarage)
+    if not currentGarage then
+        return nil
+    end
+
+    local auctions = AreaAuctions[State.SelectedArea] or {}
+    local currentIndex
+
+    for index, garageName in ipairs(auctions) do
+        if garageName == currentGarage.Name then
+            currentIndex = index
+            break
+        end
+    end
+
+    if not currentIndex or #auctions <= 1 then
+        return nil
+    end
+
+    -- Wrap through the area's list so the win event can always stage at the
+    -- next currently spawned/affordable auction without waiting on Lost & Found.
+    for offset = 1, #auctions - 1 do
+        local index = ((currentIndex - 1 + offset) % #auctions) + 1
+        local garageName = auctions[index]
+
+        if not WasNetWorthRejected
+            or not WasNetWorthRejected(State.SelectedArea, garageName) then
+
+            local nextGarage = GetGarageByNameForArea(
+                State.SelectedArea,
+                garageName
+            )
+
+            if nextGarage
+                and nextGarage ~= currentGarage
+                and CanAffordGarage(nextGarage) then
+
+                return nextGarage
+            end
+        end
+    end
+
+    return nil
+end
+
+local function StageAtNextGarage(currentGarage)
+    local nextGarage = GetNextGarageAfter(currentGarage)
+
+    if not nextGarage then
+        FarmingWaitingGarage = nil
+        return false
+    end
+
+    FarmingWaitingGarage = nextGarage
+
+    -- IMPORTANT: positioning only.
+    -- Do NOT activate EnterAuction here.
+    return TeleportToGarage(nextGarage)
+end
+
+local function TeleportToSelectedLostFound()
+    if HubDestroyed or not State.Farming then
+        return false
+    end
+
+    local root = GetRoot()
+
+    if not root then
+        return false
+    end
+
+    local lostFound
+
+    if State.SelectedArea == "Cargo Ship" then
+        local cargoShip = workspace:FindFirstChild("CargoShip")
+
+        if cargoShip then
+            lostFound = cargoShip:FindFirstChild("Lost and Found Box")
+        end
+
+    elseif State.SelectedArea == "Cargo Train" then
+        local cargoTrain = workspace:FindFirstChild("CargoTrainStop")
+
+        if cargoTrain then
+            local closestDistance = math.huge
+
+            for _, object in ipairs(cargoTrain:GetChildren()) do
+                if object.Name == "Lost and Found Box" then
+                    local part =
+                        object:IsA("BasePart")
+                        and object
+                        or object:FindFirstChildWhichIsA("BasePart", true)
+
+                    if part then
+                        local distance =
+                            (part.Position - root.Position).Magnitude
+
+                        if distance < closestDistance then
+                            closestDistance = distance
+                            lostFound = object
+                        end
+                    end
+                end
+            end
+        end
+
+    else
+        local areas = workspace:FindFirstChild("Areas")
+        local area = areas and areas:FindFirstChild(State.SelectedArea)
+
+        if area then
+            lostFound = area:FindFirstChild("Lost and Found Box", true)
+        end
+    end
+
+    if not lostFound then
+        return false
+    end
+
+    -- Prefer the same model/part that contains the LostFoundPrompt.
+    local prompt = lostFound:FindFirstChild("LostFoundPrompt", true)
+    local destination
+
+    if prompt and prompt.Parent and prompt.Parent:IsA("BasePart") then
+        destination = prompt.Parent
+    end
+
+    if not destination then
+        destination = lostFound:FindFirstChildWhichIsA("BasePart", true)
+    end
+
+    if not destination then
+        return false
+    end
+
+    -- Position only. Do not activate the Lost & Found prompt.
+    root.CFrame = destination.CFrame + Vector3.new(0, 3, 0)
+
+    return true
+end
+
+local function FireAuctionPause()
+    if HubDestroyed or not State.PauseAuction then
+        return false
+    end
+
+    local success = pcall(function()
+        RequestAuctionPause:FireServer(true)
+    end)
+
+    return success
+end
+
+local function StartPauseAuctionWatcher()
+    if PauseWatcherStarted then
+        return
+    end
+
+    PauseWatcherStarted = true
+
+    task.spawn(function()
+        local pausedThisAuction = false
+        local auctionWasOpen = false
+
+        while not HubDestroyed do
+            local auctionOpen = AuctionIsOpen()
+
+            if not auctionOpen then
+                -- New auction next time the bidding UI opens.
+                pausedThisAuction = false
+                auctionWasOpen = false
+            else
+                if not auctionWasOpen then
+                    auctionWasOpen = true
+                end
+
+                -- IMPORTANT:
+                -- Do NOT pause just because the auction opened.
+                -- Pause only after Auto Bid has actually had a chance
+                -- to place the first bid.
+                if State.PauseAuction
+                    and State.AutoBid
+                    and not pausedThisAuction then
+
+                    -- While waiting for the first bid button to become
+                    -- usable, keep returning to the EntrySquare. This happens
+                    -- BEFORE the button is active, not afterward.
+                    if State.Farming and FarmingBidGarage then
+                        TeleportToBidEntrySquare()
+                    end
+
+                    local bidButton = GetBidButton()
+
+                    if bidButton
+                        and bidButton:IsA("GuiButton")
+                        and bidButton.Visible
+                        and bidButton.Active then
+
+                        -- FIRST BID: send immediately. No pre-bid delay.
+                        local currentBidGarage = FarmingBidGarage
+
+                        local bidSent = pcall(function()
+                            BidEvent:FireServer()
+                        end)
+
+                        if bidSent then
+                            FarmingBidGarage = nil
+
+                            -- Short registration window, then pause.
+                            task.wait(0.08)
+
+                            if not HubDestroyed
+                                and State.PauseAuction
+                                and AuctionIsOpen() then
+
+                                local pauseSent = FireAuctionPause()
+
+                                if pauseSent then
+                                    pausedThisAuction = true
+
+                                    -- After the pause request succeeds, move
+                                    -- to the selected area's Lost & Found.
+                                    if State.Farming then
+                                        TeleportToSelectedLostFound()
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            task.wait(0.02)
+        end
+
+        PauseWatcherStarted = false
+    end)
+end
+
+StartPauseAuctionWatcher()
+
+--==============================================================
+-- WAIT FOR ACTUAL AUCTION FINISH
+--==============================================================
+
+local function WaitForAuctionFinished(runId)
+    local sawOpen = false
+    local closedChecks = 0
+    local waitStarted = os.clock()
+    local wonSerialAtStart = AuctionWonSerial
+
+    while not HubDestroyed
+        and State.Farming
+        and RunIds.Farming == runId do
+
+        -- This is the earliest reliable completion signal. Do not wait for
+        -- the old physical garage to despawn after the win message appears.
+        if AuctionWonSerial ~= wonSerialAtStart then
+            FarmingCompletedGarage = FarmingCurrentGarage
+            return true
+        end
+
+        if AuctionIsOpen() then
+            sawOpen = true
+            closedChecks = 0
+        elseif sawOpen then
+            closedChecks += 1
+
+            -- Keep UI-close as a fallback in case the game changes the
+            -- wording of the win notification.
+            if closedChecks >= 2 then
+                FarmingCompletedGarage = FarmingBidGarage
+                return true
+            end
+        end
+
+        if os.clock() - waitStarted >= 60 then
+            FarmingCompletedGarage = FarmingCurrentGarage
+            FarmingBidGarage = nil
+            return true
+        end
+
+        task.wait(0.02)
+    end
+
+    return false
+end
+
+--==============================================================
+-- SERVER NET-WORTH REJECTION TRACKING
+-- If the server rejects a garage with:
+-- "You need $... Net Worth to enter this auction."
+-- remember that exact garage and skip it for the rest of this farming run.
+--==============================================================
+
+local NetWorthRejectedGarages = {}
+local PendingGarageEntry = nil
+
+-- The dropdown is the user's persistent target. Temporary fallback garages
+-- must never overwrite this selection.
+local FarmingPreferredAuction = nil
+
+local function GarageRejectKey(areaName, garageName)
+    return tostring(areaName) .. "::" .. tostring(garageName)
+end
+
+local function WasNetWorthRejected(areaName, garageName)
+    return NetWorthRejectedGarages[
+        GarageRejectKey(areaName, garageName)
+    ] == true
+end
+
+local function MarkNetWorthRejected(areaName, garageName)
+    if not areaName or not garageName then
+        return
+    end
+
+    NetWorthRejectedGarages[
+        GarageRejectKey(areaName, garageName)
+    ] = true
+end
+
+local function FindFarmableAuction(areaName)
+    local auctions = AreaAuctions[areaName] or {}
+
+    for _, name in ipairs(auctions) do
+        local garage = GetGarageByNameForArea(areaName, name)
+
+        if garage
+            and not WasNetWorthRejected(areaName, name)
+            and CanAffordGarage(garage) then
+
+            return name
+        end
+    end
+
+    return nil
+end
+
+do
+    local events = ReplicatedStorage:FindFirstChild("Events")
+    local uiEvents = events and events:FindFirstChild("UI")
+    local notifyRemote = uiEvents and uiEvents:FindFirstChild("Notify")
+
+    if notifyRemote and notifyRemote:IsA("RemoteEvent") then
+        TrackConnection(
+            notifyRemote.OnClientEvent:Connect(function(message)
+                if HubDestroyed or type(message) ~= "string" then
+                    return
+                end
+
+                local lower = message:lower()
+
+                -- Advance Auto Farm as soon as the game displays the
+                -- auction-won message. This is intentionally independent
+                -- of the old garage despawning.
+                if lower:find("auction", 1, true)
+                    and lower:find("won", 1, true) then
+
+                    -- The notification itself is the fastest completion signal.
+                    -- Teleport NOW instead of waiting for the farming coroutine,
+                    -- Lost & Found claims, UI teardown, or the old garage despawn.
+                    local completedGarage = FarmingCurrentGarage
+
+                    if completedGarage then
+                        FarmingCompletedGarage = completedGarage
+                    end
+
+                    AuctionWonSerial += 1
+
+                    if State.Farming and completedGarage then
+                        task.spawn(function()
+                            StageAtNextGarage(completedGarage)
+                        end)
+                    end
+                end
+
+                if lower:find("net worth", 1, true)
+                    and lower:find("to enter this auction", 1, true) then
+
+                    local pending = PendingGarageEntry
+
+                    if pending then
+                        MarkNetWorthRejected(
+                            pending.Area,
+                            pending.Name
+                        )
+
+                        FarmingBidGarage = nil
+                        FarmingWaitingGarage = nil
+                    end
+                end
+            end)
+        )
+    end
+end
+
+--==============================================================
+-- FARM ONE GARAGE
+--==============================================================
+
+local function FarmGarage(garageName, areaName, runId)
+    -- A previous win may already have staged us at this garage.
+    -- Keep that recovery marker until this cycle has actually started.
+
+    if HubDestroyed
+        or not State.Farming
+        or RunIds.Farming ~= runId then
+
+        return "stopped"
+    end
+
+    local garage = GetGarageByNameForArea(areaName, garageName)
+
+    if not garage then
+        return "unavailable"
+    end
+
+    -- Preserve the exact physical instance for the entire auction cycle.
+    FarmingCurrentGarage = garage
+
+    -- If the server already told us this garage requires more Net Worth,
+    -- never teleport to or prompt it again during this farming run.
+    if WasNetWorthRejected(areaName, garageName) then
+        return "unaffordable"
+    end
+
+    if not CanAffordGarage(garage) then
+        return "unaffordable"
+    end
+
+    if not TeleportToGarage(garage) then
+        return "start_failed"
+    end
+
+    FarmingWaitingGarage = nil
+
+    -- Give the newly streamed EntrySquare/prompt a moment to become ready.
+    -- This is deliberately longer than the old 0.10s because firing the
+    -- prompt too early could be ignored by the game.
+    task.wait(0.35)
+
+    if HubDestroyed
+        or not State.Farming
+        or RunIds.Farming ~= runId then
+
+        return "stopped"
+    end
+
+    if not CanAffordGarage(garage) then
+        return "unaffordable"
+    end
+
+    PendingGarageEntry = {
+        Area = areaName,
+        Name = garageName,
+        Garage = garage,
+        RunId = runId,
+    }
+
+    -- Do not assume one fireproximityprompt call actually started the auction.
+    -- Keep pressing the SAME garage's EnterAuction prompt until the auction UI
+    -- confirms that the server accepted it. This does not wait for despawn.
+    FarmingBidGarage = garage
+    FarmingBidRunId = runId
+
+    local started = false
+    local auctionStart = os.clock()
+    local lastPromptAttempt = 0
+
+    while not HubDestroyed
+        and State.Farming
+        and RunIds.Farming == runId
+        and os.clock() - auctionStart < 5 do
+
+        if WasNetWorthRejected(areaName, garageName) then
+            PendingGarageEntry = nil
+            FarmingBidGarage = nil
+            return "unaffordable"
+        end
+
+        if AuctionIsOpen() and GetBidButton() then
+            started = true
+            break
+        end
+
+        local now = os.clock()
+
+        if now - lastPromptAttempt >= 0.45 then
+            -- Re-resolve the prompt each attempt in case streaming replaced it.
+            local currentPrompt = GetGaragePrompt(garage)
+
+            if currentPrompt and currentPrompt.Enabled ~= false then
+                FireGaragePrompt(garage)
+            end
+
+            lastPromptAttempt = now
+        end
+
+        task.wait(0.02)
+    end
+
+    -- Once the auction is actually open, return to the EntrySquare for the
+    -- first bid just like before.
+    if started and State.AutoBid then
+        TeleportToBidEntrySquare()
+    end
+
+    PendingGarageEntry = nil
+
+    if not started then
+        FarmingBidGarage = nil
+        return "start_failed"
+    end
+
+    --==========================================================
+    -- BID -> PAUSE
+    -- Same auction-cycle agenda.
+    --==========================================================
+
+    -- Never advance based on an arbitrary auction timer.
+    -- Stay here until the actual bidding UI closes.
+    local finished = WaitForAuctionFinished(runId)
+
+    FarmingBidGarage = nil
+
+    if finished then
+        return "finished"
+    end
+
+    return "stopped"
+end
+
+--==============================================================
+-- FARMING LOOP
+--==============================================================
+
+local function StartFarming(runId)
+    task.spawn(function()
+        while not HubDestroyed
+            and State.Farming
+            and RunIds.Farming == runId do
+
+            local areaName = State.SelectedArea
+            local auctions = AreaAuctions[areaName] or {}
+
+            -- Capture the user's selected garage as the persistent target.
+            -- Fallbacks below are temporary and do not replace this.
+            local preferredAuction =
+                FarmingPreferredAuction
+                or State.SelectedAuction
+
+            if #auctions == 0 then
+                task.wait(2)
+                continue
+            end
+
+            local index = 1
+
+            for i, name in ipairs(auctions) do
+                if name == preferredAuction then
+                    index = i
+                    break
+                end
+            end
+
+            while not HubDestroyed
+                and State.Farming
+                and RunIds.Farming == runId
+                and State.SelectedArea == areaName do
+
+                local garageName = auctions[index]
+
+                if not garageName then
+                    index = 1
+                    garageName = auctions[index]
+                end
+
+                local callOk, result = pcall(
+                    FarmGarage,
+                    garageName,
+                    areaName,
+                    runId
+                )
+
+                if not callOk then
+                    -- A transient streamed object/UI error must never kill
+                    -- the entire farming coroutine.
+                    FarmingBidGarage = nil
+                    FarmingWaitingGarage = nil
+                    result = "start_failed"
+                end
+
+                if result == "finished" then
+                    -- The selected auction is the STARTING point, not a garage
+                    -- we should wait on after every win. Advance immediately
+                    -- through the area's auction list.
+                    local nextIndex = index
+                    local nextGarage = nil
+                    local nextName = nil
+
+                    for offset = 1, #auctions do
+                        local candidateIndex =
+                            ((index - 1 + offset) % #auctions) + 1
+                        local candidateName = auctions[candidateIndex]
+
+                        if not WasNetWorthRejected(
+                            areaName,
+                            candidateName
+                        ) then
+                            local candidateGarage =
+                                GetGarageByNameForArea(
+                                    areaName,
+                                    candidateName
+                                )
+
+                            if candidateGarage
+                                and CanAffordGarage(candidateGarage) then
+
+                                nextIndex = candidateIndex
+                                nextName = candidateName
+                                nextGarage = candidateGarage
+                                break
+                            end
+                        end
+                    end
+
+                    if nextGarage then
+                        index = nextIndex
+                        FarmingWaitingGarage = nextGarage
+
+                        -- Move the instant the win is detected. We do not
+                        -- wait for the completed garage to despawn.
+                        TeleportToGarage(nextGarage)
+                    else
+                        -- Nothing else is spawned/usable at this exact instant.
+                        -- Keep cycling quickly; do not add a multi-second wait.
+                        index = ((index) % #auctions) + 1
+                        FarmingWaitingGarage = nil
+                        task.wait(0.05)
+                    end
+
+                    -- The old physical instance stays blacklisted until a
+                    -- different garage has been selected, preventing the
+                    -- stale post-win object from pulling us back.
+                    if nextGarage and nextGarage ~= FarmingCompletedGarage then
+                        FarmingCurrentGarage = nextGarage
+                    end
+
+                elseif result == "unaffordable"
+                    or result == "unavailable" then
+
+                    FarmingBidGarage = nil
+                    FarmingWaitingGarage = nil
+
+                    -- Only use another garage when the current target cannot
+                    -- be used. This fallback is temporary.
+                    local fallback = FindFarmableAuction(areaName)
+
+                    if fallback and fallback ~= garageName then
+                        for i, name in ipairs(auctions) do
+                            if name == fallback then
+                                index = i
+                                break
+                            end
+                        end
+                    else
+                        task.wait(1)
+                    end
+
+                elseif result == "start_failed" then
+                    FarmingBidGarage = nil
+                    FarmingWaitingGarage = nil
+
+                    -- A failed start does not change the user's selection.
+                    -- Retry the preferred garage first when possible.
+                    local preferredGarage =
+                        GetGarageByNameForArea(
+                            areaName,
+                            preferredAuction
+                        )
+
+                    if preferredGarage
+                        and not WasNetWorthRejected(
+                            areaName,
+                            preferredAuction
+                        )
+                        and CanAffordGarage(preferredGarage) then
+
+                        for i, name in ipairs(auctions) do
+                            if name == preferredAuction then
+                                index = i
+                                break
+                            end
+                        end
+                    else
+                        local fallback = FindFarmableAuction(areaName)
+
+                        if fallback then
+                            for i, name in ipairs(auctions) do
+                                if name == fallback then
+                                    index = i
+                                    break
+                                end
+                            end
+                        end
+                    end
+
+                    -- If the auction failed to start, keep farming alive
+                    -- and retry after five seconds instead of abandoning it.
+                    local retryStarted = os.clock()
+
+                    while not HubDestroyed
+                        and State.Farming
+                        and RunIds.Farming == runId
+                        and State.SelectedArea == areaName
+                        and os.clock() - retryStarted < 5 do
+
+                        task.wait(0.1)
+                    end
+
+                elseif result == "stopped" then
+                    return
+                end
+
+                task.wait(0.25)
+            end
+        end
+    end)
+end
+
+--==============================================================
+-- INSTANT UNLOAD
+--==============================================================
+
+local function GetMyVehicle()
+    local character = LocalPlayer.Character
+
+    if character then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+        if humanoid and humanoid.SeatPart then
+            local vehicle = humanoid.SeatPart:FindFirstAncestorOfClass("Model")
+
+            if vehicle then
+                return vehicle
+            end
+        end
+    end
+
+    -- Search likely streamed vehicles for the equipped GUID.
+    local equipped = LocalPlayer:GetAttribute("EquippedVehicle")
+
+    if equipped and equipped ~= "" then
+        for _, object in ipairs(workspace:GetDescendants()) do
+            if object:IsA("Model") then
+                local guid =
+                    object:GetAttribute("VehicleGUID")
+                    or object:GetAttribute("GUID")
+
+                if guid == equipped then
+                    return object
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local FarmingVehicleMonitorSerial = 0
+local FarmingPausedForFullVehicle = false
+
+local function IsVehicleFull()
+    local vehicle = GetMyVehicle()
+    if not vehicle then
+        return false
+    end
+
+    local weight = tonumber(vehicle:GetAttribute("CargoWeight")) or 0
+    local limit = tonumber(vehicle:GetAttribute("CargoWeightLimit")) or 0
+
+    if limit > 0 and weight >= limit then
+        return true, weight, limit
+    end
+
+    -- Fallback for builds where CargoWeight updates late.
+    local vehicleId =
+        vehicle:GetAttribute("VehicleGUID")
+        or vehicle:GetAttribute("GUID")
+        or LocalPlayer:GetAttribute("EquippedVehicle")
+
+    local events = ReplicatedStorage:FindFirstChild("Events")
+    local vehicleEvents = events and events:FindFirstChild("Vehicles")
+    local getItems = vehicleEvents and vehicleEvents:FindFirstChild("GetVehicleItems")
+
+    if vehicleId and getItems then
+        local ok, items = pcall(function()
+            return getItems:InvokeServer(vehicleId)
+        end)
+
+        if ok and type(items) == "table" then
+            local count = 0
+            for _ in pairs(items) do
+                count += 1
+            end
+
+            local capacity =
+                tonumber(vehicle:GetAttribute("CargoCapacity"))
+                or tonumber(vehicle:GetAttribute("ItemCapacity"))
+                or tonumber(vehicle:GetAttribute("StorageCapacity"))
+
+            if capacity and capacity > 0 and count >= capacity then
+                return true, count, capacity
+            end
+        end
+    end
+
+    return false, weight, limit
+end
+
+local function PauseFarmingForFullVehicle()
+    if HubDestroyed or not State.Farming then
+        return
+    end
+
+    FarmingPausedForFullVehicle = true
+    State.Farming = false
+    RunIds.Farming += 1
+
+    PendingGarageEntry = nil
+    FarmingBidGarage = nil
+    FarmingWaitingGarage = nil
+
+    local updateToggle = ToggleObjects and ToggleObjects.Farming
+    if updateToggle then
+        updateToggle(false)
+    end
+
+    Notify(
+        "Auto Farm Paused",
+        "Vehicle is full. Unload it, then turn Farming back on.",
+        4
+    )
+end
+
+local function StartFarmingVehicleFullMonitor(runId)
+    FarmingVehicleMonitorSerial += 1
+    local serial = FarmingVehicleMonitorSerial
+
+    task.spawn(function()
+        while not HubDestroyed
+            and State.Farming
+            and RunIds.Farming == runId
+            and FarmingVehicleMonitorSerial == serial do
+
+            local full = IsVehicleFull()
+            if full then
+                PauseFarmingForFullVehicle()
+                return
+            end
+
+            task.wait(0.5)
+        end
+    end)
+end
+
+local function InstantUnloadVehicle(targetVehicle)
+    pcall(function()
+        if HubDestroyed then
+            return
+        end
+
+        local vehicle = targetVehicle or GetMyVehicle()
+
+        local vehicleId =
+            (
+                vehicle
+                and (
+                    vehicle:GetAttribute("VehicleGUID")
+                    or vehicle:GetAttribute("GUID")
+                )
+            )
+            or LocalPlayer:GetAttribute("EquippedVehicle")
+
+        if not vehicleId or vehicleId == "" then
+            return
+        end
+
+        local events = ReplicatedStorage:FindFirstChild("Events")
+        local vehicleEvents = events and events:FindFirstChild("Vehicles")
+
+        if not vehicleEvents then
+            return
+        end
+
+        local getItemsRemote =
+            vehicleEvents:FindFirstChild("GetVehicleItems")
+
+        local transferRemote =
+            vehicleEvents:FindFirstChild("TransferVehicleItemsToInventory")
+
+        if not getItemsRemote or not transferRemote then
+            return
+        end
+
+        local items
+
+        pcall(function()
+            items = getItemsRemote:InvokeServer(vehicleId)
+        end)
+
+        if type(items) ~= "table" then
+            return
+        end
+
+        local guids = {}
+
+        -- Item GUIDs are the keys.
+        for guid, _ in pairs(items) do
+            table.insert(guids, guid)
+        end
+
+        if #guids > 0 then
+            pcall(function()
+                transferRemote:FireServer(guids)
+            end)
+
+            task.wait(0.4)
+        end
+
+        if vehicle then
+            pcall(function()
+                vehicle:SetAttribute("CargoWeight", 0)
+            end)
+        end
+    end)
+end
+
+local function StartInstantUnload(runId)
+    task.spawn(function()
+        while not HubDestroyed
+            and State.InstantUnload
+            and RunIds.Unload == runId do
+
+            InstantUnloadVehicle()
+
+            task.wait(1)
+        end
+    end)
+end
+
+--==============================================================
+-- LOST & FOUND UNLOADER
+-- USES THE CURRENT AREA SELECTOR
+--==============================================================
+
+local LostFoundUIEvents = ReplicatedStorage
+    :WaitForChild("Events")
+    :WaitForChild("UI")
+
+local GetLostItems =
+    LostFoundUIEvents:WaitForChild("GetLostItems")
+
+local ClaimLostItem =
+    LostFoundUIEvents:WaitForChild("ClaimLostItem")
+
+local function LostFoundLooksLikeUUID(value)
+    if type(value) ~= "string" then
+        return false
+    end
+
+    return value:match(
+        "^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$"
+    ) ~= nil
+end
+
+local function FindLostFoundIDs(value, found, visited)
+    found = found or {}
+    visited = visited or {}
+
+    if type(value) == "string" then
+        if LostFoundLooksLikeUUID(value) then
+            found[value] = true
+        end
+        return found
+    end
+
+    if type(value) ~= "table" then
+        return found
+    end
+
+    if visited[value] then
+        return found
+    end
+
+    visited[value] = true
+
+    for key, child in pairs(value) do
+        if LostFoundLooksLikeUUID(key) then
+            found[key] = true
+        end
+
+        FindLostFoundIDs(child, found, visited)
+    end
+
+    return found
+end
+
+local function CheckLostAndFound(runId)
+    if HubDestroyed
+        or not State.LostFoundUnloader
+        or RunIds.LostFound ~= runId then
+        return
+    end
+
+    local areaName = State.SelectedArea
+
+    local success, lostItems = pcall(function()
+        return GetLostItems:InvokeServer(areaName)
+    end)
+
+    if not success then
+        return
+    end
+
+    local ids = FindLostFoundIDs(lostItems)
+    local itemIds = {}
+
+    for itemId in pairs(ids) do
+        table.insert(itemIds, itemId)
+    end
+
+    if #itemIds == 0 then
+        return
+    end
+
+    -- Claim in background workers. Auto Farm never waits for these
+    -- InvokeServer calls to finish before moving to/starting the next auction.
+    task.spawn(function()
+        local claimed = 0
+        local completed = 0
+
+        for _, itemId in ipairs(itemIds) do
+            task.spawn(function()
+                if HubDestroyed
+                    or not State.LostFoundUnloader
+                    or RunIds.LostFound ~= runId
+                    or State.SelectedArea ~= areaName then
+
+                    completed += 1
+                    return
+                end
+
+                local claimSuccess = pcall(function()
+                    ClaimLostItem:InvokeServer(areaName, itemId)
+                end)
+
+                if claimSuccess then
+                    claimed += 1
+                end
+
+                completed += 1
+            end)
+        end
+
+        while not HubDestroyed
+            and RunIds.LostFound == runId
+            and completed < #itemIds do
+
+            task.wait(0.02)
+        end
+
+        if claimed > 0
+            and not HubDestroyed
+            and RunIds.LostFound == runId then
+
+            Notify(
+                "Lost & Found",
+                "Collected " .. tostring(claimed)
+                    .. " item(s) from " .. areaName,
+                2
+            )
+        end
+    end)
+end
+
+local function StartLostFoundUnloader(runId)
+    task.spawn(function()
+        while not HubDestroyed
+            and State.LostFoundUnloader
+            and RunIds.LostFound == runId do
+
+            -- GetLostItems is the discovery source. We only claim
+            -- UUIDs after they appear in this returned data.
+            CheckLostAndFound(runId)
+
+            local started = os.clock()
+
+            while not HubDestroyed
+                and State.LostFoundUnloader
+                and RunIds.LostFound == runId
+                and os.clock() - started < 0.5 do
+                task.wait(0.05)
+            end
+        end
+    end)
+end
+
+--==============================================================
+-- FARMING DROPDOWNS
+--==============================================================
+
+local AreaDropdown
+local AuctionDropdown
+
+local function FindPreferredStartingAuction(areaName)
+    local auctions = AreaAuctions[areaName] or {}
+
+    -- A preferred farming auction MUST both exist and be affordable.
+    -- Never fall back to an existing garage that the player cannot afford.
+    for _, name in ipairs(auctions) do
+        local garage = GetGarageByNameForArea(areaName, name)
+
+        if garage and CanAffordGarage(garage) then
+            return name
+        end
+    end
+
+    return nil
+end
+
+local function RefreshAuctionDropdown()
+    if HubDestroyed then
+        return
+    end
+
+    local areaName = State.SelectedArea
+    local auctions = AreaAuctions[areaName] or {}
+
+    local preferred = FindPreferredStartingAuction(areaName)
+
+    State.SelectedAuction = preferred or "No auctions found"
+
+    if AuctionDropdown then
+        AuctionDropdown:SetOptions(
+            auctions,
+            State.SelectedAuction
+        )
+    end
+end
+
+AreaDropdown = CreateDropdown(
+    FarmingPage,
+    "AREA",
+    State.SelectedArea,
+    AreaNames,
+    function(value)
+        State.SelectedArea = value
+
+        local auctions = AreaAuctions[value] or {}
+        local preferred = FindPreferredStartingAuction(value)
+
+        State.SelectedAuction =
+            preferred
+            or auctions[1]
+            or "No auctions found"
+
+        if AuctionDropdown then
+            AuctionDropdown:SetOptions(
+                auctions,
+                State.SelectedAuction
+            )
+        end
+    end
+)
+
+AuctionDropdown = CreateDropdown(
+    FarmingPage,
+    "STARTING AUCTION",
+    State.SelectedAuction,
+    AreaAuctions[State.SelectedArea],
+    function(value)
+        -- This is the garage the user actually wants to farm.
+        -- Keep it selected even if it is temporarily unavailable.
+        State.SelectedAuction = value
+        FarmingPreferredAuction = value
+    end
+)
+
+--==============================================================
+-- AUTO BID STATUS
+--==============================================================
+
+CreateAutoBidStatus(FarmingPage)
+
+--==============================================================
+-- FARMING TOGGLES
+--==============================================================
+
+CreateToggle(
+    FarmingPage,
+    "Instant Unload",
+    "InstantUnload",
+    function(enabled)
+        RunIds.Unload += 1
+
+        if enabled then
+            StartInstantUnload(RunIds.Unload)
+        end
+    end
+)
+
+CreateToggle(
+    FarmingPage,
+    "Pause Auction",
+    "PauseAuction",
+    function(enabled)
+        if enabled then
+            Notify(
+                "Pause Auction",
+                "Armed - waiting for first bid",
+                2
+            )
+        end
+    end
+)
+
+CreateToggle(
+    FarmingPage,
+    "Lost & Found Unloader",
+    "LostFoundUnloader",
+    function(enabled)
+        RunIds.LostFound += 1
+
+        if enabled then
+            StartLostFoundUnloader(RunIds.LostFound)
+
+            Notify(
+                "Lost & Found",
+                "Watching " .. tostring(State.SelectedArea),
+                2
+            )
+        else
+            Notify(
+                "Lost & Found",
+                "Unloader disabled",
+                2
+            )
+        end
+    end
+)
+
+CreateToggle(
+    FarmingPage,
+    "Farming",
+    "Farming",
+    function(enabled)
+        RunIds.Farming += 1
+
+        if enabled then
+            local full = IsVehicleFull()
+
+            if full then
+                FarmingPausedForFullVehicle = true
+                State.Farming = false
+
+                local updateToggle = ToggleObjects and ToggleObjects.Farming
+                if updateToggle then
+                    updateToggle(false)
+                end
+
+                Notify(
+                    "Auto Farm Paused",
+                    "Vehicle is full. Unload it before starting Farming.",
+                    4
+                )
+                return
+            end
+
+            FarmingPausedForFullVehicle = false
+            table.clear(NetWorthRejectedGarages)
+            PendingGarageEntry = nil
+            FarmingCompletedGarage = nil
+            FarmingCurrentGarage = nil
+            FarmingPreferredAuction = State.SelectedAuction
+
+            local farmingRunId = RunIds.Farming
+            StartFarming(farmingRunId)
+            StartFarmingVehicleFullMonitor(farmingRunId)
+        else
+            FarmingVehicleMonitorSerial += 1
+                    PendingGarageEntry = nil
+        end
+    end
+)
+
+--==============================================================
+-- REUSABLE ITEM FILTER SYSTEM
+-- UI / CONFIG ONLY - NO INVENTORY SCAN AND NO ITEM ACTIONS.
+-- Add/remove game-wide entries only in these two master lists.
+--==============================================================
+
+local function SetupTestsRuleBuilder()
+    local MASTER_RARITIES = {
+        "Junk",
+        "Uncommon",
+        "Rare",
+        "Epic",
+        "Legendary",
+        "Mythical",
+        "Exclusive",
+    }
+
+    local MASTER_MUTATORS = {
+        "Dirty",
+        "Mint",
+        "Silver",
+        "Huge",
+        "Tiny",
+        "Gold",
+        "Corrupted",
+        "Diamond",
+        "Gem",
+        "Chrome",
+        "Hologram",
+        "Void",
+        "Secret",
+        "Rainbow",
+        "Onyx",
+        "Pure",
+        "Spotless",
+        "Perfect",
+        "Moonlit",
+        "Firefly",
+        "Wet",
+        "Shocked",
+        "Acid",
+        "Caustic",
+        "Sandy",
+        "Dune",
+        "Redacted",
+        "Seized",
+        "Cobwebbed",
+        "Antique",
+        "Ancient",
+        "Timeless",
+    }
+
+    local PawnEvents = ReplicatedStorage:WaitForChild("Events"):WaitForChild("Pawn")
+    local GetSellableItems = PawnEvents:WaitForChild("GetSellableItems")
+    local SellItems = PawnEvents:WaitForChild("SellItems")
+    local GetPawnState = PawnEvents:WaitForChild("GetPawnState")
+
+    local ItemsModule = ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Items")
+    local MutatorModuleObject = ReplicatedStorage:WaitForChild("Modules"):WaitForChild("MutatorModule")
+    local ItemsData = require(ItemsModule)
+    local MutatorModule = require(MutatorModuleObject)
+
+    local ActiveFilter = {
+        Mode = "Sell Selected",
+        Rarities = {},
+        Mutators = {},
+    }
+
+    local ManualSaleExclusions = {}
+
+    local QuickSell = {
+        Enabled = false,
+        AutoInventory = false,
+        AutoRate = false,
+        InventoryTrigger = 80,
+        TargetRate = 0,
+        LastSale = 0,
+        LastRateCheck = 0,
+        CurrentRate = 0,
+        SecondsUntilNext = 0,
+    }
+
+    local function CopyList(source)
+        local result = {}
+        for i, value in ipairs(source) do
+            result[i] = value
+        end
+        return result
+    end
+
+    local function GetItemConfig(data)
+        if type(data) ~= "table" or type(ItemsData) ~= "table" then
+            return nil
+        end
+
+        -- Primary game layout: inventory/pawn entries identify their config
+        -- through ItemId. Try both string and numeric table keys because the
+        -- Items module can use either form.
+        local itemId =
+            data.ItemId
+            or data.ItemID
+            or data.itemId
+            or data.itemID
+            or data.Id
+            or data.ID
+            or data.id
+
+        if itemId ~= nil then
+            local idString = tostring(itemId)
+            local direct = ItemsData[idString]
+
+            if direct == nil then
+                local numericId = tonumber(itemId)
+                if numericId ~= nil then
+                    direct = ItemsData[numericId]
+                end
+            end
+
+            if type(direct) == "table" then
+                return direct
+            end
+
+            -- Fallback used by the reference Storage Hunters logic:
+            -- search config entries for an internal Id matching ItemId.
+            for configKey, config in pairs(ItemsData) do
+                if type(config) == "table" then
+                    local configId =
+                        config.ItemId
+                        or config.ItemID
+                        or config.Id
+                        or config.ID
+                        or config.id
+
+                    if tostring(configKey) == idString
+                        or (configId ~= nil and tostring(configId) == idString) then
+                        return config
+                    end
+                end
+            end
+        end
+
+        -- Last-resort name lookup. This is useful for pawn entries that expose
+        -- the display/name but omit or reshape ItemId.
+        local itemName =
+            data.Name
+            or data.name
+            or data.DisplayName
+            or data.displayName
+            or data.ItemName
+            or data.itemName
+
+        if itemName ~= nil then
+            local target = tostring(itemName):lower()
+
+            -- Strip leading [Mutator] display tags before comparing config names.
+            target = target:gsub("^%s*", "")
+            while target:match("^%b[]") do
+                target = target:gsub("^%b[]%s*", "", 1)
+            end
+            target = target:match("^%s*(.-)%s*$")
+
+            for _, config in pairs(ItemsData) do
+                if type(config) == "table" then
+                    local configName = config.Name or config.name
+                    if configName and tostring(configName):lower() == target then
+                        return config
+                    end
+                end
+            end
+        end
+
+        return nil
+    end
+
+    local function NormalizeFilterName(value)
+        if value == nil then
+            return nil
+        end
+
+        if type(value) == "table" then
+            value = value.Name or value.name or value.Rarity or value.rarity
+        end
+
+        if value == nil then
+            return nil
+        end
+
+        return tostring(value):match("^%s*(.-)%s*$")
+    end
+
+    local function CanonicalFromList(value, list)
+        local normalized = NormalizeFilterName(value)
+        if not normalized or normalized == "" then
+            return nil
+        end
+
+        local lower = normalized:lower()
+
+        for _, option in ipairs(list) do
+            if option:lower() == lower then
+                return option
+            end
+        end
+
+        return nil
+    end
+
+    local function GetItemRarity(data, itemConf)
+        local candidates = {}
+
+        local function AddCandidate(tbl)
+            if type(tbl) ~= "table" then
+                return
+            end
+
+            candidates[#candidates + 1] = tbl.Rarity
+            candidates[#candidates + 1] = tbl.rarity
+            candidates[#candidates + 1] = tbl.RarityName
+            candidates[#candidates + 1] = tbl.rarityName
+        end
+
+        AddCandidate(data)
+        AddCandidate(itemConf)
+
+        for _, value in ipairs(candidates) do
+            local rarity = CanonicalFromList(value, MASTER_RARITIES)
+            if rarity then
+                return rarity
+            end
+        end
+
+        return nil
+    end
+
+    local function GetItemMutators(data, itemConf)
+        local found = {}
+
+        local function Add(value)
+            local canonical = CanonicalFromList(value, MASTER_MUTATORS)
+            if canonical then
+                found[canonical] = true
+            end
+        end
+
+        if type(data) == "table" then
+            -- Exact layout used by the Nex/Storage Hunters item logic.
+            if type(data.Mutators) == "table" then
+                for _, mutator in ipairs(data.Mutators) do
+                    if type(mutator) == "table" then
+                        Add(mutator.name or mutator.Name)
+                    else
+                        Add(mutator)
+                    end
+                end
+
+                -- Also support keyed mutator tables.
+                for key, value in pairs(data.Mutators) do
+                    if type(key) == "string" and value ~= false and value ~= nil then
+                        Add(key)
+                    end
+                end
+            end
+
+            if data.CleanMutation and data.CleanMutation ~= "None" then
+                Add(data.CleanMutation)
+            end
+
+            if data.Mutator and data.Mutator ~= "None" then
+                Add(data.Mutator)
+            end
+
+            -- Some of the user's filter choices are stored as condition/status
+            -- rather than in the Mutators array (for example Mint).
+            Add(data.Condition)
+            Add(data.condition)
+            Add(data.Status)
+            Add(data.status)
+
+            -- Boolean status/mutator flags such as Dirty/Seized/etc.
+            for _, option in ipairs(MASTER_MUTATORS) do
+                local direct = rawget(data, option)
+                local lower = rawget(data, option:lower())
+
+                if direct == true or direct == 1 or lower == true or lower == 1 then
+                    found[option] = true
+                end
+            end
+        end
+
+        -- Nex also reads [Mutator] tags from the displayed item name.
+        local displayName =
+            (type(data) == "table" and (
+                data.DisplayName
+                or data.displayName
+                or data.Name
+                or data.name
+            ))
+            or (itemConf and itemConf.Name)
+
+        if displayName then
+            for tag in tostring(displayName):gmatch("%[(.-)%]") do
+                local cleanTag = tag
+                    :gsub("%s*%+.*", "")
+                    :match("^%s*(.-)%s*$")
+
+                Add(cleanTag)
+            end
+        end
+
+        return found
+    end
+
+    local function MatchesRule(data, itemConf, rule)
+        local hasRaritySelections = next(rule.Rarities) ~= nil
+        local hasMutatorSelections = next(rule.Mutators) ~= nil
+
+        if not hasRaritySelections and not hasMutatorSelections then
+            return false
+        end
+
+        local rarity = GetItemRarity(data, itemConf)
+        local muts = GetItemMutators(data, itemConf)
+
+        -- KEEP SELECTED:
+        -- Any selected rarity OR any selected mutator protects the item.
+        -- Extra/unselected mutators do NOT cancel that protection.
+        if rule.Mode == "Keep Selected" then
+            if hasRaritySelections and rarity and rule.Rarities[rarity] then
+                return true
+            end
+
+            if hasMutatorSelections then
+                for mutator in pairs(muts) do
+                    if rule.Mutators[mutator] then
+                        return true
+                    end
+                end
+            end
+
+            return false
+        end
+
+        -- SELL SELECTED:
+        -- Active rarity and mutator categories must BOTH pass.
+        -- Multiple choices inside one category are OR'd.
+        if hasRaritySelections then
+            if not rarity or not rule.Rarities[rarity] then
+                return false
+            end
+        end
+
+        -- Sell-mode mutators are strict:
+        -- at least one selected mutator must exist, and every recognized
+        -- mutator on the item must also be selected.
+        if hasMutatorSelections then
+            local foundSelectedMutator = false
+
+            for mutator in pairs(muts) do
+                if rule.Mutators[mutator] then
+                    foundSelectedMutator = true
+                else
+                    return false
+                end
+            end
+
+            if not foundSelectedMutator then
+                return false
+            end
+        end
+
+        return true
+    end
+
+    local function CalculateItemValue(data, itemConf)
+        local basePrice = (itemConf and tonumber(itemConf.BasePrice)) or 0
+        local price = basePrice
+
+        pcall(function()
+            price = MutatorModule:CalculatePriceForEntry(basePrice, data) or basePrice
+        end)
+
+        return tonumber(price) or 0
+    end
+
+    local function PassesValueFilter(value)
+        -- Value filtering intentionally disabled.
+        return true
+    end
+
+    local function ItemShouldAutoSell(data)
+        local itemConf = GetItemConfig(data)
+        if not itemConf then
+            -- Safety: unresolved items never enter the automatic sale queue.
+            return false, 0
+        end
+
+        -- Safety: if the item's actual rarity cannot be resolved from its data
+        -- or configuration, keep it out of Quick Sell rather than guessing.
+        if not GetItemRarity(data, itemConf) then
+            return false, 0
+        end
+
+        local value = CalculateItemValue(data, itemConf)
+        if not PassesValueFilter(value) then
+            return false, value
+        end
+
+        local hasSelections =
+            next(ActiveFilter.Rarities) ~= nil
+            or next(ActiveFilter.Mutators) ~= nil
+
+        -- Safety default: with no selected filters, sell nothing.
+        if not hasSelections then
+            return false, value
+        end
+
+        local matchesSelection = MatchesRule(data, itemConf, ActiveFilter)
+
+        if ActiveFilter.Mode == "Keep Selected" then
+            -- KEEP mode:
+            -- matching selected rarity/mutator = protected/stays
+            -- everything else = eligible to sell
+            return not matchesSelection, value
+        end
+
+        -- SELL mode:
+        -- matching selected rarity/mutator = eligible to sell
+        -- everything else = stays
+        return matchesSelection, value
+    end
+
+    --==========================================================
+    -- EQUIPPED / WORN ACCESSORY SAFETY LOCK
+    -- Anything currently equipped/worn is excluded before SellItems.
+    --==========================================================
+
+    local function NormalizeGuid(value)
+        if value == nil then
+            return nil
+        end
+        if type(value) == "string" or type(value) == "number" then
+            return tostring(value)
+        end
+        if type(value) == "table" then
+            return AutoUnfavoriteGetItemId(nil, value)
+        end
+        return nil
+    end
+
+    local function ReadFavoriteFlag(tbl)
+        if type(tbl) ~= "table" then
+            return nil
+        end
+
+        local favoriteKeys = {
+            "Favorite", "favorite",
+            "Favorited", "favorited",
+            "IsFavorite", "isFavorite",
+            "IsFavorited", "isFavorited",
+            "Favourite", "favourite",
+            "IsFavourite", "isFavourite",
+        }
+
+        for _, key in ipairs(favoriteKeys) do
+            local value = rawget(tbl, key)
+
+            if value == true or value == 1 then
+                return true
+            elseif value == false or value == 0 then
+                return false
+            elseif type(value) == "string" then
+                local lower = value:lower()
+                if lower == "true" or lower == "favorite" or lower == "favorited" then
+                    return true
+                elseif lower == "false" or lower == "notfavorite" or lower == "unfavorited" then
+                    return false
+                end
+            end
+        end
+
+        return nil
+    end
+
+    local function BuildFavoriteSafetyMap()
+        local favorites = {}
+        local seen = {}
+
+        local ok, inventory = pcall(function()
+            return AutoUnfavoriteGetInventory:InvokeServer()
+        end)
+
+        if not ok or type(inventory) ~= "table" then
+            -- GetSellableItems data is still checked directly by
+            -- IsConfirmedNotFavorite; don't crash the preview.
+            return favorites
+        end
+
+        local function Scan(tbl, inheritedFavorite, depth)
+            if depth > 12 or type(tbl) ~= "table" or seen[tbl] then
+                return
+            end
+            seen[tbl] = true
+
+            local localFlag = ReadFavoriteFlag(tbl)
+            local hereFavorite = inheritedFavorite or localFlag == true
+
+            for key, value in pairs(tbl) do
+                local guid = AutoUnfavoriteGetItemId(key, value)
+                local childFavorite = hereFavorite
+
+                if type(value) == "table" then
+                    local childFlag = ReadFavoriteFlag(value)
+                    if childFlag == true then
+                        childFavorite = true
+                    end
+                end
+
+                if guid and childFavorite then
+                    favorites[tostring(guid)] = true
+                end
+
+                if type(value) == "table" then
+                    Scan(value, childFavorite, depth + 1)
+                end
+            end
+        end
+
+        Scan(inventory, false, 0)
+        return favorites
+    end
+
+    local function IsConfirmedNotFavorite(guid, data, favoriteMap)
+        -- Never allow an item positively marked favorite by either source.
+        if ReadFavoriteFlag(data) == true then
+            return false
+        end
+
+        if type(favoriteMap) == "table" and favoriteMap[tostring(guid)] == true then
+            return false
+        end
+
+        return true
+    end
+
+    local function BuildEquippedSafetyMap()
+        local equipped = {}
+        local seen = {}
+
+        -- Roblox character accessories/tools: collect any useful IDs/UUIDs carried
+        -- by currently worn instances. This is supplemental to inventory metadata.
+        local character = LocalPlayer.Character
+        if character then
+            for _, obj in ipairs(character:GetDescendants()) do
+                if obj:IsA("Accessory") or obj:IsA("Tool") then
+                    local candidates = {
+                        obj:GetAttribute("UUID"),
+                        obj:GetAttribute("Guid"),
+                        obj:GetAttribute("GUID"),
+                        obj:GetAttribute("ItemId"),
+                        obj:GetAttribute("ItemID"),
+                    }
+                    for _, value in ipairs(candidates) do
+                        local id = NormalizeGuid(value)
+                        if id then
+                            equipped[id] = true
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Inventory metadata is the primary protection for game-specific equipped
+        -- accessories. We scan recursively for common equipped/worn markers.
+        local ok, inventory = pcall(function()
+            return AutoUnfavoriteGetInventory:InvokeServer()
+        end)
+
+        if not ok or type(inventory) ~= "table" then
+            -- Keep the character-derived equipped map even if inventory metadata
+            -- is temporarily unavailable.
+            return equipped
+        end
+
+        local function IsEquippedFlag(tbl)
+            if type(tbl) ~= "table" then
+                return false
+            end
+
+            local boolKeys = {
+                "Equipped", "equipped",
+                "IsEquipped", "isEquipped",
+                "Wearing", "wearing",
+                "Worn", "worn",
+                "IsWorn", "isWorn",
+                "IsWearing", "isWearing",
+            }
+
+            for _, key in ipairs(boolKeys) do
+                local value = rawget(tbl, key)
+                if value == true or value == 1 then
+                    return true
+                end
+                if type(value) == "string" then
+                    local lower = value:lower()
+                    if lower == "true" or lower == "equipped" or lower == "worn" or lower == "wearing" then
+                        return true
+                    end
+                end
+            end
+
+            local slot = rawget(tbl, "EquippedSlot")
+                or rawget(tbl, "equippedSlot")
+                or rawget(tbl, "WearSlot")
+                or rawget(tbl, "wearSlot")
+
+            if slot ~= nil and tostring(slot) ~= "" and tostring(slot) ~= "0" then
+                return true
+            end
+
+            return false
+        end
+
+        local function Scan(tbl, inheritedEquipped, depth)
+            if depth > 12 or type(tbl) ~= "table" or seen[tbl] then
+                return
+            end
+            seen[tbl] = true
+
+            local hereEquipped = inheritedEquipped or IsEquippedFlag(tbl)
+
+            for key, value in pairs(tbl) do
+                local guid = AutoUnfavoriteGetItemId(key, value)
+                local childEquipped = hereEquipped
+
+                if type(value) == "table" and IsEquippedFlag(value) then
+                    childEquipped = true
+                end
+
+                if guid and childEquipped then
+                    equipped[tostring(guid)] = true
+                end
+
+                if type(value) == "table" then
+                    Scan(value, childEquipped, depth + 1)
+                end
+            end
+        end
+
+        Scan(inventory, false, 0)
+        return equipped
+    end
+
+    local function GetItemDisplayInfo(guid, data, value)
+        local conf = GetItemConfig(data)
+        local name = (conf and conf.Name) or ("Item " .. tostring(guid))
+        local rarity = GetItemRarity(data, conf) or "Unknown"
+        local muts = GetItemMutators(data, conf)
+        local mutList = {}
+
+        for _, mut in ipairs(MASTER_MUTATORS) do
+            if muts[mut] then
+                mutList[#mutList + 1] = mut
+            end
+        end
+
+        if #mutList == 0 then
+            mutList[1] = "None"
+        end
+
+        return {
+            Guid = tostring(guid),
+            Name = tostring(name),
+            Rarity = tostring(rarity),
+            Mutators = table.concat(mutList, ", "),
+            Value = math.floor(tonumber(value) or 0),
+        }
+    end
+
+    --==========================================================
+    -- SAFE ITEM SAFETY LOCK
+    -- Safes are never allowed into the Quick Sell queue.
+    -- This protection is independent of Sell/Keep filter mode.
+    --==========================================================
+    local function IsProtectedSafe(data)
+        if type(data) ~= "table" then
+            return false
+        end
+
+        local itemConf = GetItemConfig(data)
+
+        local function LooksLikeSafe(value)
+            if value == nil then
+                return false
+            end
+
+            local textValue = tostring(value):lower()
+            return textValue == "safe"
+                or textValue:match("^safe%s") ~= nil
+                or textValue:match("%ssafe$") ~= nil
+                or textValue:match("%ssafe%s") ~= nil
+        end
+
+        local function CheckTable(tbl)
+            if type(tbl) ~= "table" then
+                return false
+            end
+
+            local candidates = {
+                tbl.Name, tbl.name,
+                tbl.DisplayName, tbl.displayName,
+                tbl.ItemName, tbl.itemName,
+                tbl.Type, tbl.type,
+                tbl.ItemType, tbl.itemType,
+                tbl.Category, tbl.category,
+                tbl.Class, tbl.class,
+            }
+
+            for _, value in ipairs(candidates) do
+                if LooksLikeSafe(value) then
+                    return true
+                end
+            end
+
+            -- Explicit safe flags, if supplied by the game.
+            local safeFlags = {
+                tbl.IsSafe, tbl.isSafe,
+                tbl.Safe, tbl.safe,
+            }
+
+            for _, value in ipairs(safeFlags) do
+                if value == true or value == 1 then
+                    return true
+                end
+            end
+
+            return false
+        end
+
+        return CheckTable(data) or CheckTable(itemConf)
+    end
+
+    local function GetEligibleItems()
+        local items = GetSellableItems:InvokeServer()
+        local guids = {}
+        local preview = {}
+        local totalValue = 0
+        local totalSellable = 0
+
+        if type(items) ~= "table" then
+            return guids, totalValue, totalSellable, preview
+        end
+
+        local favoriteMap = BuildFavoriteSafetyMap() or {}
+        local equippedMap = BuildEquippedSafetyMap() or {}
+
+        for guid, data in pairs(items) do
+            totalSellable += 1
+            guid = tostring(guid)
+
+            -- HARD LOCK #1: item must be explicitly confirmed NOT favorite.
+            -- HARD LOCK #2: item must NOT be currently equipped/worn.
+            -- HARD LOCK #3: safes are NEVER allowed into Quick Sell.
+            if not ManualSaleExclusions[guid]
+                and IsConfirmedNotFavorite(guid, data, favoriteMap)
+                and not equippedMap[guid]
+                and not IsProtectedSafe(data) then
+
+                local shouldSell, value = ItemShouldAutoSell(data)
+
+                if shouldSell then
+                    guids[#guids + 1] = guid
+                    totalValue += value
+                    preview[#preview + 1] = GetItemDisplayInfo(guid, data, value)
+                end
+            end
+        end
+
+        table.sort(preview, function(a, b)
+            if a.Value == b.Value then
+                return a.Name:lower() < b.Name:lower()
+            end
+            return a.Value < b.Value
+        end)
+
+        return guids, totalValue, totalSellable, preview
+    end
+
+    local StatusLabel
+    local EligibleLabel
+    local RateLabel
+    local InventoryLabel
+    local PreviewList
+    local PreviewEmptyLabel
+
+    local function SetStatus(message, color)
+        if StatusLabel then
+            StatusLabel.Text = tostring(message)
+            StatusLabel.TextColor3 = color or MutedText
+        end
+    end
+
+    local function RefreshLiveInfo()
+        if HubDestroyed then
+            return
+        end
+
+        local invCount = tonumber(LocalPlayer:GetAttribute("InventoryCount")) or 0
+        local invCap = tonumber(LocalPlayer:GetAttribute("InventoryCap")) or 0
+        local invPct = invCap > 0 and ((invCount / invCap) * 100) or 0
+
+        if InventoryLabel then
+            InventoryLabel.Text = string.format(
+                "Inventory: %d / %d  (%.1f%%)",
+                invCount,
+                invCap,
+                invPct
+            )
+        end
+
+        local ok, guids, totalValue, totalSellable, preview = pcall(GetEligibleItems)
+        if not ok then
+            warn("[QUICK SELL PREVIEW]", guids)
+        end
+
+        if ok and EligibleLabel then
+            EligibleLabel.Text = string.format(
+                "WILL SELL: %d / %d sellable  |  Value: $%d",
+                #guids,
+                totalSellable,
+                math.floor(totalValue)
+            )
+        elseif EligibleLabel then
+            EligibleLabel.Text = "WILL SELL: unable to safely verify items"
+        end
+
+        if PreviewList then
+            for _, child in ipairs(PreviewList:GetChildren()) do
+                if not child:IsA("UIListLayout") and child ~= PreviewEmptyLabel then
+                    child:Destroy()
+                end
+            end
+
+            if ok and type(preview) == "table" and #preview > 0 then
+                if PreviewEmptyLabel then
+                    PreviewEmptyLabel.Visible = false
+                end
+
+                for index, item in ipairs(preview) do
+                    local row = New("Frame", {
+                        Size = UDim2.new(1, -8, 0, 42),
+                        BackgroundColor3 = DarkerBackground,
+                        BorderSizePixel = 0,
+                        LayoutOrder = index,
+                    }, PreviewList)
+                    Corner(row, 5)
+
+                    New("TextLabel", {
+                        Size = UDim2.new(1, -46, 0, 19),
+                        Position = UDim2.fromOffset(6, 3),
+                        BackgroundTransparency = 1,
+                        Text = item.Name,
+                        TextColor3 = TextColor,
+                        TextSize = 9,
+                        Font = Enum.Font.GothamBold,
+                        TextXAlignment = Enum.TextXAlignment.Left,
+                        TextTruncate = Enum.TextTruncate.AtEnd,
+                    }, row)
+
+                    New("TextLabel", {
+                        Size = UDim2.new(1, -46, 0, 17),
+                        Position = UDim2.fromOffset(6, 21),
+                        BackgroundTransparency = 1,
+                        Text = string.format(
+                            "%s  |  %s  |  $%d",
+                            item.Rarity,
+                            item.Mutators ~= "" and item.Mutators or "No listed mutator",
+                            item.Value
+                        ),
+                        TextColor3 = MutedText,
+                        TextSize = 8,
+                        Font = Enum.Font.Gotham,
+                        TextXAlignment = Enum.TextXAlignment.Left,
+                        TextTruncate = Enum.TextTruncate.AtEnd,
+                    }, row)
+
+                    local removeButton = New("TextButton", {
+                        Size = UDim2.fromOffset(30, 30),
+                        Position = UDim2.new(1, -36, 0.5, -15),
+                        BackgroundColor3 = OffColor,
+                        BorderSizePixel = 0,
+                        Text = "X",
+                        TextColor3 = Color3.fromRGB(255, 110, 110),
+                        TextSize = 11,
+                        Font = Enum.Font.GothamBold,
+                    }, row)
+                    Corner(removeButton, 5)
+
+                    TrackConnection(removeButton.MouseButton1Click:Connect(function()
+                        ManualSaleExclusions[item.Guid] = true
+                        SetStatus(item.Name .. " removed from sale queue.", Color3.fromRGB(100, 210, 140))
+                        task.spawn(RefreshLiveInfo)
+                    end))
+                end
+            elseif PreviewEmptyLabel then
+                PreviewEmptyLabel.Visible = true
+                PreviewEmptyLabel.Text = ok
+                    and "Nothing is currently selected to sell."
+                    or "Preview unavailable - safety verification failed."
+            end
+        end
+
+        return invPct
+    end
+
+    local function UpdateRateLabel()
+        if RateLabel then
+            RateLabel.Text = string.format(
+                "Quick Sale Rate: %s%d%%  |  Next: %02d:%02d",
+                QuickSell.CurrentRate >= 0 and "+" or "",
+                QuickSell.CurrentRate,
+                math.floor(QuickSell.SecondsUntilNext / 60),
+                QuickSell.SecondsUntilNext % 60
+            )
+        end
+    end
+
+    local function RefreshPawnRate()
+        local ok, state = pcall(function()
+            return GetPawnState:InvokeServer()
+        end)
+
+        if ok and type(state) == "table" then
+            local rawRate = tonumber(state.rate)
+
+            if rawRate ~= nil then
+                -- Game rate is a multiplier around 1.0.
+                -- Examples:
+                -- 0.7934925 -> -21%
+                -- 1.01      -> +1%
+                -- 1.25      -> +25%
+                QuickSell.CurrentRate = math.floor(((rawRate - 1) * 100) + 0.5)
+            end
+
+            QuickSell.SecondsUntilNext = math.max(
+                0,
+                math.floor(tonumber(state.secondsUntilNext) or 0)
+            )
+        end
+
+        UpdateRateLabel()
+    end
+
+    local function SellEligible(reason)
+        if HubDestroyed then
+            return
+        end
+
+        if os.clock() - QuickSell.LastSale < 4 then
+            return
+        end
+
+        local ok, guids, totalValue = pcall(GetEligibleItems)
+        if not ok then
+            SetStatus("Quick Sell: failed to read sellable items", Color3.fromRGB(255, 100, 100))
+            return
+        end
+
+        if #guids == 0 then
+            SetStatus("Quick Sell: no items match SELL rules", MutedText)
+            return
+        end
+
+        QuickSell.LastSale = os.clock()
+        SetStatus("Quick Sell: selling " .. tostring(#guids) .. " matching items...", ThemeColor)
+
+        local success, result = pcall(function()
+            return SellItems:InvokeServer(guids)
+        end)
+
+        if success and result and result.success then
+            SetStatus(
+                string.format(
+                    "%s - sold %d items for $%d",
+                    reason or "Quick Sell",
+                    result.sold or #guids,
+                    result.totalEarned or 0
+                ),
+                Color3.fromRGB(80, 210, 120)
+            )
+
+            Notify(
+                "Auto Quick Sell",
+                string.format(
+                    "Sold %d matching items for $%d",
+                    result.sold or #guids,
+                    result.totalEarned or 0
+                ),
+                3
+            )
+        else
+            SetStatus("Quick Sell: sale failed", Color3.fromRGB(255, 100, 100))
+        end
+
+        task.delay(0.5, RefreshLiveInfo)
+    end
+
+    local function CreateItemFilter(parent, options)
+        options = options or {}
+
+        local config = ActiveFilter
+        config.Mode = options.DefaultMode or config.Mode
+
+        local root = New("Frame", {
+            Size = UDim2.new(1, -8, 0, 0),
+            BackgroundTransparency = 1,
+            AutomaticSize = Enum.AutomaticSize.Y,
+        }, parent)
+
+        New("UIListLayout", {
+            Padding = UDim.new(0, 7),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }, root)
+
+        local function Card(height)
+            local frame = New("Frame", {
+                Size = UDim2.new(1, 0, 0, height),
+                BackgroundColor3 = ButtonBackground,
+                BorderSizePixel = 0,
+            }, root)
+            Corner(frame, 7)
+            return frame
+        end
+
+        local titleCard = Card(56)
+
+        New("TextLabel", {
+            Size = UDim2.new(1, -20, 0, 22),
+            Position = UDim2.fromOffset(10, 4),
+            BackgroundTransparency = 1,
+            Text = options.Title or "Auto Quick Sell Item Filter",
+            TextColor3 = TextColor,
+            TextSize = 13,
+            Font = Enum.Font.GothamBold,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }, titleCard)
+
+        New("TextLabel", {
+            Size = UDim2.new(1, -20, 0, 28),
+            Position = UDim2.fromOffset(10, 25),
+            BackgroundTransparency = 1,
+            Text = "SELL = only selected filters sell. KEEP = selected filters stay and everything else may sell. Favorites, worn/equipped items, and safes are always protected and never sell.",
+            TextColor3 = MutedText,
+            TextSize = 9,
+            Font = Enum.Font.Gotham,
+            TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }, titleCard)
+
+        local modeCard = Card(70)
+
+        New("TextLabel", {
+            Size = UDim2.new(1, -20, 0, 22),
+            Position = UDim2.fromOffset(10, 5),
+            BackgroundTransparency = 1,
+            Text = "Editing rules for:",
+            TextColor3 = TextColor,
+            TextSize = 11,
+            Font = Enum.Font.GothamBold,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }, modeCard)
+
+        local sellButton = New("TextButton", {
+            Size = UDim2.new(0.5, -15, 0, 30),
+            Position = UDim2.fromOffset(10, 33),
+            BorderSizePixel = 0,
+            Text = "Sell Selected",
+            TextColor3 = TextColor,
+            TextSize = 10,
+            Font = Enum.Font.GothamBold,
+        }, modeCard)
+        Corner(sellButton, 6)
+
+        local keepButton = New("TextButton", {
+            Size = UDim2.new(0.5, -15, 0, 30),
+            Position = UDim2.new(0.5, 5, 0, 33),
+            BorderSizePixel = 0,
+            Text = "Keep Selected",
+            TextColor3 = TextColor,
+            TextSize = 10,
+            Font = Enum.Font.GothamBold,
+        }, modeCard)
+        Corner(keepButton, 6)
+
+        local selectedBox
+        local sectionRefreshers = {}
+
+        local function CurrentRules()
+            return ActiveFilter
+        end
+
+        local function SelectedValues()
+            local values = {}
+            local rules = CurrentRules()
+
+            for _, rarity in ipairs(MASTER_RARITIES) do
+                if rules.Rarities[rarity] then
+                    values[#values + 1] = "Rarity: " .. rarity
+                end
+            end
+
+            for _, mutator in ipairs(MASTER_MUTATORS) do
+                if rules.Mutators[mutator] then
+                    values[#values + 1] = "Mutator: " .. mutator
+                end
+            end
+
+            return values
+        end
+
+        local function RefreshSelectedBox()
+            if not selectedBox then
+                return
+            end
+
+            local values = SelectedValues()
+            local prefix = config.Mode == "Keep Selected"
+                and "KEEP these; sell other matches: "
+                or "SELL only these: "
+
+            if #values == 0 then
+                selectedBox.Text = prefix .. "No options selected"
+            else
+                selectedBox.Text = prefix .. table.concat(values, ", ")
+            end
+        end
+
+        local function RefreshMode()
+            sellButton.BackgroundColor3 =
+                config.Mode == "Sell Selected" and ThemeColor or OffColor
+
+            keepButton.BackgroundColor3 =
+                config.Mode == "Keep Selected" and ThemeColor or OffColor
+
+            for _, refresh in ipairs(sectionRefreshers) do
+                refresh()
+            end
+
+            RefreshSelectedBox()
+            task.spawn(RefreshLiveInfo)
+        end
+
+        TrackConnection(sellButton.MouseButton1Click:Connect(function()
+            config.Mode = "Sell Selected"
+            RefreshMode()
+        end))
+
+        TrackConnection(keepButton.MouseButton1Click:Connect(function()
+            config.Mode = "Keep Selected"
+            RefreshMode()
+        end))
+
+        local function CreateMultiSelect(title, values, key)
+            local holder = Card(42)
+            holder.ClipsDescendants = true
+
+            local header = New("TextButton", {
+                Size = UDim2.new(1, 0, 0, 42),
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                Text = "",
+                AutoButtonColor = false,
+            }, holder)
+
+            New("TextLabel", {
+                Size = UDim2.new(0.55, -10, 1, 0),
+                Position = UDim2.fromOffset(10, 0),
+                BackgroundTransparency = 1,
+                Text = title,
+                TextColor3 = TextColor,
+                TextSize = 11,
+                Font = Enum.Font.GothamBold,
+                TextXAlignment = Enum.TextXAlignment.Left,
+            }, header)
+
+            local summary = New("TextLabel", {
+                Size = UDim2.new(0.45, -28, 1, 0),
+                Position = UDim2.new(0.55, 0, 0, 0),
+                BackgroundTransparency = 1,
+                Text = "None",
+                TextColor3 = MutedText,
+                TextSize = 9,
+                Font = Enum.Font.Gotham,
+                TextXAlignment = Enum.TextXAlignment.Right,
+            }, header)
+
+            local arrow = New("TextLabel", {
+                Size = UDim2.fromOffset(22, 42),
+                Position = UDim2.new(1, -25, 0, 0),
+                BackgroundTransparency = 1,
+                Text = "▼",
+                TextColor3 = MutedText,
+                TextSize = 10,
+                Font = Enum.Font.GothamBold,
+            }, header)
+
+            local listFrame = New("Frame", {
+                Size = UDim2.new(1, -12, 0, 0),
+                Position = UDim2.fromOffset(6, 42),
+                BackgroundTransparency = 1,
+            }, holder)
+
+            New("UIListLayout", {
+                Padding = UDim.new(0, 4),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            }, listFrame)
+
+            local open = false
+
+            local function Rebuild()
+                for _, child in ipairs(listFrame:GetChildren()) do
+                    if not child:IsA("UIListLayout") then
+                        child:Destroy()
+                    end
+                end
+
+                local tableForMode = CurrentRules()[key]
+                local count = 0
+
+                for _, value in ipairs(values) do
+                    if tableForMode[value] then
+                        count += 1
+                    end
+                end
+
+                summary.Text = count == 0 and "None" or tostring(count) .. " selected"
+                arrow.Text = open and "▲" or "▼"
+
+                for _, value in ipairs(values) do
+                    local selected = tableForMode[value] == true
+
+                    local button = New("TextButton", {
+                        Size = UDim2.new(1, 0, 0, 28),
+                        BackgroundColor3 = selected and ThemeColor or DarkerBackground,
+                        BorderSizePixel = 0,
+                        Text = (selected and "✓  " or "    ") .. value,
+                        TextColor3 = TextColor,
+                        TextSize = 10,
+                        Font = Enum.Font.Gotham,
+                        TextXAlignment = Enum.TextXAlignment.Left,
+                    }, listFrame)
+                    Corner(button, 5)
+
+                    TrackConnection(button.MouseButton1Click:Connect(function()
+                        local activeTable = CurrentRules()[key]
+
+                        if activeTable[value] then
+                            activeTable[value] = nil
+                        else
+                            activeTable[value] = true
+                        end
+
+                        Rebuild()
+                        RefreshSelectedBox()
+                        task.spawn(RefreshLiveInfo)
+                    end))
+                end
+
+                local listHeight = #values * 32
+                listFrame.Size = UDim2.new(1, -12, 0, listHeight)
+                holder.Size = UDim2.new(
+                    1, 0,
+                    0, open and (48 + listHeight) or 42
+                )
+            end
+
+            TrackConnection(header.MouseButton1Click:Connect(function()
+                open = not open
+                Rebuild()
+            end))
+
+            sectionRefreshers[#sectionRefreshers + 1] = Rebuild
+            Rebuild()
+        end
+
+        CreateMultiSelect("Rarity", CopyList(MASTER_RARITIES), "Rarities")
+        CreateMultiSelect("Mutators", CopyList(MASTER_MUTATORS), "Mutators")
+
+        local selectedCard = Card(132)
+
+        New("TextLabel", {
+            Size = UDim2.new(1, -20, 0, 24),
+            Position = UDim2.fromOffset(10, 5),
+            BackgroundTransparency = 1,
+            Text = "Selected Options",
+            TextColor3 = TextColor,
+            TextSize = 11,
+            Font = Enum.Font.GothamBold,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }, selectedCard)
+
+        selectedBox = New("TextBox", {
+            Size = UDim2.new(1, -20, 0, 88),
+            Position = UDim2.fromOffset(10, 32),
+            BackgroundColor3 = DarkerBackground,
+            BorderSizePixel = 0,
+            ClearTextOnFocus = false,
+            MultiLine = true,
+            TextEditable = false,
+            TextWrapped = true,
+            Text = "SELL: No options selected",
+            TextColor3 = TextColor,
+            TextSize = 10,
+            Font = Enum.Font.Gotham,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top,
+        }, selectedCard)
+        Corner(selectedBox, 6)
+
+        local clearButton = New("TextButton", {
+            Size = UDim2.new(1, 0, 0, 34),
+            BackgroundColor3 = OffColor,
+            BorderSizePixel = 0,
+            Text = "Clear Filter Selections",
+            TextColor3 = TextColor,
+            TextSize = 10,
+            Font = Enum.Font.GothamBold,
+        }, root)
+        Corner(clearButton, 7)
+
+        TrackConnection(clearButton.MouseButton1Click:Connect(function()
+            table.clear(ActiveFilter.Rarities)
+            table.clear(ActiveFilter.Mutators)
+
+            for _, refresh in ipairs(sectionRefreshers) do
+                refresh()
+            end
+
+            RefreshSelectedBox()
+            task.spawn(RefreshLiveInfo)
+        end))
+
+        RefreshMode()
+
+        return {
+            Root = root,
+            Config = config,
+        }
+    end
+
+    CreateItemFilter(TestsPage, {
+        Title = "Auto Quick Sell Item Filter",
+        DefaultMode = "Sell Selected",
+    })
+
+    local function Card(height)
+        local frame = New("Frame", {
+            Size = UDim2.new(1, -8, 0, height),
+            BackgroundColor3 = ButtonBackground,
+            BorderSizePixel = 0,
+        }, TestsPage)
+        Corner(frame, 7)
+        return frame
+    end
+
+    local automationCard = Card(142)
+
+    New("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 22),
+        Position = UDim2.fromOffset(10, 5),
+        BackgroundTransparency = 1,
+        Text = "Auto Quick Sell Triggers",
+        TextColor3 = TextColor,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, automationCard)
+
+    local inventoryToggle = New("TextButton", {
+        Size = UDim2.new(0.5, -15, 0, 30),
+        Position = UDim2.fromOffset(10, 32),
+        BorderSizePixel = 0,
+        TextColor3 = TextColor,
+        TextSize = 9,
+        Font = Enum.Font.GothamBold,
+    }, automationCard)
+    Corner(inventoryToggle, 6)
+
+    local rateToggle = New("TextButton", {
+        Size = UDim2.new(0.5, -15, 0, 30),
+        Position = UDim2.new(0.5, 5, 0, 32),
+        BorderSizePixel = 0,
+        TextColor3 = TextColor,
+        TextSize = 9,
+        Font = Enum.Font.GothamBold,
+    }, automationCard)
+    Corner(rateToggle, 6)
+
+    local function RefreshTriggerButtons()
+        inventoryToggle.Text = "Inventory Trigger: " .. (QuickSell.AutoInventory and "ON" or "OFF")
+        inventoryToggle.BackgroundColor3 = QuickSell.AutoInventory and ThemeColor or OffColor
+
+        rateToggle.Text = "Pawn Rate Trigger: " .. (QuickSell.AutoRate and "ON" or "OFF")
+        rateToggle.BackgroundColor3 = QuickSell.AutoRate and ThemeColor or OffColor
+    end
+
+    TrackConnection(inventoryToggle.MouseButton1Click:Connect(function()
+        QuickSell.AutoInventory = not QuickSell.AutoInventory
+        RefreshTriggerButtons()
+    end))
+
+    TrackConnection(rateToggle.MouseButton1Click:Connect(function()
+        QuickSell.AutoRate = not QuickSell.AutoRate
+        RefreshTriggerButtons()
+    end))
+
+    local function MakeSmallBox(labelText, defaultText, xScale, xOffset, y)
+        New("TextLabel", {
+            Size = UDim2.new(0.5, -15, 0, 18),
+            Position = UDim2.new(xScale, xOffset, 0, y),
+            BackgroundTransparency = 1,
+            Text = labelText,
+            TextColor3 = MutedText,
+            TextSize = 8,
+            Font = Enum.Font.Gotham,
+            TextXAlignment = Enum.TextXAlignment.Left,
+        }, automationCard)
+
+        local box = New("TextBox", {
+            Size = UDim2.new(0.5, -15, 0, 26),
+            Position = UDim2.new(xScale, xOffset, 0, y + 18),
+            BackgroundColor3 = DarkerBackground,
+            BorderSizePixel = 0,
+            ClearTextOnFocus = false,
+            Text = tostring(defaultText),
+            TextColor3 = TextColor,
+            TextSize = 9,
+            Font = Enum.Font.GothamBold,
+        }, automationCard)
+        Corner(box, 5)
+        return box
+    end
+
+    local fillBox = MakeSmallBox("Inventory %", 80, 0, 10, 70)
+
+    local rateBox = MakeSmallBox("Quick Sell Rate %", 0, 0.5, 5, 70)
+
+    TrackConnection(fillBox.FocusLost:Connect(function()
+        QuickSell.InventoryTrigger = math.clamp(
+            math.floor(tonumber(fillBox.Text) or 80),
+            1,
+            100
+        )
+        fillBox.Text = tostring(QuickSell.InventoryTrigger)
+    end))
+
+    TrackConnection(rateBox.FocusLost:Connect(function()
+        -- Signed values are allowed: -25, 0, 1, +15, 100, etc.
+        local cleaned = tostring(rateBox.Text or "")
+            :gsub("%%", "")
+            :gsub("%s+", "")
+
+        local parsed = tonumber(cleaned)
+
+        if parsed ~= nil then
+            QuickSell.TargetRate = parsed
+        end
+
+        rateBox.Text = tostring(QuickSell.TargetRate)
+    end))
+
+    RefreshTriggerButtons()
+
+    local liveCard = Card(122)
+
+    New("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 22),
+        Position = UDim2.fromOffset(10, 5),
+        BackgroundTransparency = 1,
+        Text = "Quick Sell Monitor",
+        TextColor3 = TextColor,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, liveCard)
+
+    InventoryLabel = New("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 18),
+        Position = UDim2.fromOffset(10, 29),
+        BackgroundTransparency = 1,
+        Text = "Inventory: loading...",
+        TextColor3 = MutedText,
+        TextSize = 9,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, liveCard)
+
+    RateLabel = New("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 18),
+        Position = UDim2.fromOffset(10, 48),
+        BackgroundTransparency = 1,
+        Text = "Pawn Rate: loading...",
+        TextColor3 = MutedText,
+        TextSize = 9,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, liveCard)
+
+    EligibleLabel = New("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 18),
+        Position = UDim2.fromOffset(10, 67),
+        BackgroundTransparency = 1,
+        Text = "Eligible: loading...",
+        TextColor3 = TextColor,
+        TextSize = 9,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, liveCard)
+
+    StatusLabel = New("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 24),
+        Position = UDim2.fromOffset(10, 88),
+        BackgroundTransparency = 1,
+        Text = "Filter matcher fixed: rarity + mutation/condition/status fields feed this exact queue. Favorites + worn items stay protected.",
+        TextColor3 = MutedText,
+        TextSize = 8,
+        Font = Enum.Font.Gotham,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, liveCard)
+
+    local previewCard = Card(260)
+
+    New("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 22),
+        Position = UDim2.fromOffset(10, 5),
+        BackgroundTransparency = 1,
+        Text = "ITEMS THAT WILL BE SOLD",
+        TextColor3 = TextColor,
+        TextSize = 11,
+        Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, previewCard)
+
+    New("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 18),
+        Position = UDim2.fromOffset(10, 25),
+        BackgroundTransparency = 1,
+        Text = "Favorites + worn items are excluded. Click X beside any queued item to keep it.",
+        TextColor3 = MutedText,
+        TextSize = 8,
+        Font = Enum.Font.Gotham,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, previewCard)
+
+    PreviewList = New("ScrollingFrame", {
+        Size = UDim2.new(1, -20, 0, 202),
+        Position = UDim2.fromOffset(10, 48),
+        BackgroundColor3 = Color3.fromRGB(22, 22, 25),
+        BorderSizePixel = 0,
+        ScrollBarThickness = 4,
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        CanvasSize = UDim2.new(),
+    }, previewCard)
+    Corner(PreviewList, 6)
+
+    New("UIListLayout", {
+        Padding = UDim.new(0, 4),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, PreviewList)
+
+    PreviewEmptyLabel = New("TextLabel", {
+        Size = UDim2.new(1, -8, 0, 36),
+        BackgroundTransparency = 1,
+        Text = "Nothing is currently selected to sell.",
+        TextColor3 = MutedText,
+        TextSize = 9,
+        Font = Enum.Font.Gotham,
+        TextWrapped = true,
+        LayoutOrder = 0,
+    }, PreviewList)
+
+    local restoreQueueButton = New("TextButton", {
+        Size = UDim2.new(1, -8, 0, 30),
+        BackgroundColor3 = OffColor,
+        BorderSizePixel = 0,
+        Text = "RESTORE X-REMOVED ITEMS",
+        TextColor3 = TextColor,
+        TextSize = 9,
+        Font = Enum.Font.GothamBold,
+    }, TestsPage)
+    Corner(restoreQueueButton, 7)
+
+    TrackConnection(restoreQueueButton.MouseButton1Click:Connect(function()
+        table.clear(ManualSaleExclusions)
+        SetStatus("X-removed items restored to filter evaluation.", MutedText)
+        task.spawn(RefreshLiveInfo)
+    end))
+
+    local sellNowButton = New("TextButton", {
+        Size = UDim2.new(1, -8, 0, 36),
+        BackgroundColor3 = ThemeColor,
+        BorderSizePixel = 0,
+        Text = "SELL ELIGIBLE NOW",
+        TextColor3 = TextColor,
+        TextSize = 10,
+        Font = Enum.Font.GothamBold,
+    }, TestsPage)
+    Corner(sellNowButton, 7)
+
+    TrackConnection(sellNowButton.MouseButton1Click:Connect(function()
+        task.spawn(function()
+            SellEligible("Manual")
+        end)
+    end))
+
+    task.spawn(function()
+        local rateTimer = 0
+
+        while not HubDestroyed do
+            local invPct = 0
+
+            pcall(function()
+                invPct = RefreshLiveInfo() or 0
+            end)
+
+            rateTimer += 3
+            QuickSell.SecondsUntilNext = math.max(0, QuickSell.SecondsUntilNext - 3)
+
+            if rateTimer >= 20 or QuickSell.CurrentRate == 0 then
+                rateTimer = 0
+                pcall(RefreshPawnRate)
+            elseif RateLabel then
+                RateLabel.Text = string.format(
+                    "Pawn Rate: %d%%  |  Next change: %02d:%02d",
+                    QuickSell.CurrentRate,
+                    math.floor(QuickSell.SecondsUntilNext / 60),
+                    QuickSell.SecondsUntilNext % 60
+                )
+            end
+
+            if QuickSell.AutoInventory
+                and invPct >= QuickSell.InventoryTrigger then
+
+                pcall(function()
+                    SellEligible(
+                        string.format("Inventory %.0f%%", invPct)
+                    )
+                end)
+            end
+
+            if QuickSell.AutoRate
+                and QuickSell.CurrentRate >= QuickSell.TargetRate then
+
+                pcall(function()
+                    SellEligible(
+                        "Pawn Rate " .. tostring(QuickSell.CurrentRate) .. "%"
+                    )
+                end)
+            end
+
+            task.wait(3)
+        end
+    end)
+
+    task.spawn(function()
+        pcall(RefreshPawnRate)
+        pcall(RefreshLiveInfo)
+    end)
+end
+
+SetupTestsRuleBuilder()
+
+--==============================================================
+-- TABS
+--==============================================================
+
+local function ShowMain()
+    if HubDestroyed then
+        return
+    end
+
+    MainPage.Visible = true
+    FarmingPage.Visible = false
+    ShopPage.Visible = false
+    TestsPage.Visible = false
+
+    MainTabButton.BackgroundColor3 = ThemeColor
+    FarmingTabButton.BackgroundColor3 = ButtonBackground
+    ShopTabButton.BackgroundColor3 = ButtonBackground
+    TestsTabButton.BackgroundColor3 = ButtonBackground
+end
+
+local function ShowFarming()
+    if HubDestroyed then
+        return
+    end
+
+    MainPage.Visible = false
+    FarmingPage.Visible = true
+    ShopPage.Visible = false
+    TestsPage.Visible = false
+
+    MainTabButton.BackgroundColor3 = ButtonBackground
+    FarmingTabButton.BackgroundColor3 = ThemeColor
+    ShopTabButton.BackgroundColor3 = ButtonBackground
+    TestsTabButton.BackgroundColor3 = ButtonBackground
+
+    RefreshAuctionDropdown()
+end
+
+local function ShowShop()
+    if HubDestroyed then
+        return
+    end
+
+    MainPage.Visible = false
+    FarmingPage.Visible = false
+    ShopPage.Visible = true
+    TestsPage.Visible = false
+
+    MainTabButton.BackgroundColor3 = ButtonBackground
+    FarmingTabButton.BackgroundColor3 = ButtonBackground
+    ShopTabButton.BackgroundColor3 = ThemeColor
+    TestsTabButton.BackgroundColor3 = ButtonBackground
+end
+
+local function ShowTests()
+    if HubDestroyed then
+        return
+    end
+
+    MainPage.Visible = false
+    FarmingPage.Visible = false
+    ShopPage.Visible = false
+    TestsPage.Visible = true
+
+    MainTabButton.BackgroundColor3 = ButtonBackground
+    FarmingTabButton.BackgroundColor3 = ButtonBackground
+    ShopTabButton.BackgroundColor3 = ButtonBackground
+    TestsTabButton.BackgroundColor3 = ThemeColor
+end
+
+TrackConnection(MainTabButton.MouseButton1Click:Connect(ShowMain))
+TrackConnection(FarmingTabButton.MouseButton1Click:Connect(ShowFarming))
+TrackConnection(ShopTabButton.MouseButton1Click:Connect(ShowShop))
+TrackConnection(TestsTabButton.MouseButton1Click:Connect(ShowTests))
+
+--==============================================================
+-- THEME PICKER
+--==============================================================
+
+local ThemePicker = New("Frame", {
+    Size = UDim2.fromOffset(220, 250),
+    Position = UDim2.new(0.5, -110, 0.5, -125),
+    BackgroundColor3 = DarkBackground,
+    BorderSizePixel = 0,
+    Visible = false,
+    ZIndex = 300,
+}, Gui)
+
+Corner(ThemePicker, 10)
+
+local ThemeStroke = Stroke(ThemePicker, ThemeColor, 2)
+
+New("TextLabel", {
+    Size = UDim2.new(1, 0, 0, 30),
+    BackgroundTransparency = 1,
+    Text = "THEME",
+    TextColor3 = TextColor,
+    TextSize = 14,
+    Font = Enum.Font.GothamBold,
+    ZIndex = 301,
+}, ThemePicker)
+
+local HueWheel = New("ImageButton", {
+    Size = UDim2.fromOffset(170, 170),
+    Position = UDim2.fromOffset(25, 38),
+    BackgroundTransparency = 1,
+    AutoButtonColor = false,
+    Image = "rbxassetid://6020299385",
+    ZIndex = 301,
+}, ThemePicker)
+
+local HueCenter = New("Frame", {
+    Size = UDim2.fromOffset(60, 60),
+    Position = UDim2.new(0.5, -30, 0, 93),
+    BackgroundColor3 = ThemeColor,
+    BorderSizePixel = 0,
+    ZIndex = 302,
+}, ThemePicker)
+
+Corner(HueCenter, 30)
+
+-- Small draggable selector that rides around the actual colored ring.
+local HueSelector = New("Frame", {
+    Size = UDim2.fromOffset(14, 14),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+    BorderSizePixel = 0,
+    ZIndex = 304,
+}, HueWheel)
+
+Corner(HueSelector, 7)
+Stroke(HueSelector, Color3.fromRGB(20, 20, 20), 2)
+
+local CurrentHue = 0
+local HueDragging = false
+
+local function SetTheme(color)
+    if HubDestroyed then
+        return
+    end
+
+    ThemeColor = color
+
+    MainStroke.Color = ThemeColor
+    ThemeStroke.Color = ThemeColor
+    HueCenter.BackgroundColor3 = ThemeColor
+
+    if MainPage.Visible then
+        MainTabButton.BackgroundColor3 = ThemeColor
+        FarmingTabButton.BackgroundColor3 = ButtonBackground
+        ShopTabButton.BackgroundColor3 = ButtonBackground
+        TestsTabButton.BackgroundColor3 = ButtonBackground
+    elseif FarmingPage.Visible then
+        MainTabButton.BackgroundColor3 = ButtonBackground
+        FarmingTabButton.BackgroundColor3 = ThemeColor
+        ShopTabButton.BackgroundColor3 = ButtonBackground
+        TestsTabButton.BackgroundColor3 = ButtonBackground
+    elseif ShopPage.Visible then
+        MainTabButton.BackgroundColor3 = ButtonBackground
+        FarmingTabButton.BackgroundColor3 = ButtonBackground
+        ShopTabButton.BackgroundColor3 = ThemeColor
+        TestsTabButton.BackgroundColor3 = ButtonBackground
+    else
+        MainTabButton.BackgroundColor3 = ButtonBackground
+        FarmingTabButton.BackgroundColor3 = ButtonBackground
+        ShopTabButton.BackgroundColor3 = ButtonBackground
+        TestsTabButton.BackgroundColor3 = ThemeColor
+    end
+
+    for stateKey, update in pairs(ToggleObjects) do
+        update(State[stateKey])
+    end
+
+    UpdateAutoBidStatus()
+end
+
+-- The wheel image's red starts at the TOP and runs clockwise.
+-- Convert mouse/touch position to that same orientation.
+local function HueFromPosition(position)
+    if typeof(position) == "Vector3" then
+        position = Vector2.new(position.X, position.Y)
+    end
+
+    local center =
+        HueWheel.AbsolutePosition
+        + HueWheel.AbsoluteSize / 2
+
+    local delta = position - center
+
+    -- atan2(x, -y) makes 0 hue = top and increases clockwise.
+    local angle = math.atan2(delta.X, -delta.Y)
+    local hue = angle / (math.pi * 2)
+
+    if hue < 0 then
+        hue += 1
+    end
+
+    return hue
+end
+
+local function UpdateHueSelector(hue)
+    -- Keep the dot centered on the visible color ring.
+    local radius = 72
+    local angle = hue * math.pi * 2
+
+    local x = math.sin(angle) * radius
+    local y = -math.cos(angle) * radius
+
+    HueSelector.Position = UDim2.new(
+        0.5, x,
+        0.5, y
+    )
+end
+
+local function ApplyHueFromPosition(position)
+    if HubDestroyed then
+        return
+    end
+
+    CurrentHue = HueFromPosition(position)
+    UpdateHueSelector(CurrentHue)
+
+    SetTheme(
+        Color3.fromHSV(
+            CurrentHue,
+            0.85,
+            0.9
+        )
+    )
+end
+
+-- Start the selector at the current theme's hue.
+do
+    local hue = Color3.toHSV(ThemeColor)
+    CurrentHue = hue
+    UpdateHueSelector(CurrentHue)
+end
+
+TrackConnection(
+    HueWheel.InputBegan:Connect(function(input)
+        if HubDestroyed then
+            return
+        end
+
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+
+            HueDragging = true
+            ApplyHueFromPosition(input.Position)
+        end
+    end)
+)
+
+TrackConnection(
+    UserInputService.InputChanged:Connect(function(input)
+        if HubDestroyed or not HueDragging then
+            return
+        end
+
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch then
+
+            ApplyHueFromPosition(input.Position)
+        end
+    end)
+)
+
+TrackConnection(
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+
+            HueDragging = false
+        end
+    end)
+)
+
+TrackConnection(
+    ThemeButton.MouseButton1Click:Connect(function()
+        if not HubDestroyed then
+            ThemePicker.Visible = not ThemePicker.Visible
+        end
+    end)
+)
+
+--==============================================================
+-- CLOSE CONFIRMATION
+--==============================================================
+
+local ConfirmOverlay = New("Frame", {
+    Size = UDim2.fromScale(1, 1),
+    BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+    BackgroundTransparency = 0.35,
+    Visible = false,
+    ZIndex = 500,
+}, Gui)
+
+local ConfirmBox = New("Frame", {
+    Size = UDim2.fromOffset(320, 190),
+    Position = UDim2.new(0.5, -160, 0.5, -95),
+    BackgroundColor3 = DarkBackground,
+    BorderSizePixel = 0,
+    ZIndex = 501,
+}, ConfirmOverlay)
+
+Corner(ConfirmBox, 10)
+
+local ConfirmStroke = Stroke(ConfirmBox, ThemeColor, 2)
+
+New("TextLabel", {
+    Size = UDim2.new(1, -30, 0, 32),
+    Position = UDim2.fromOffset(15, 12),
+    BackgroundTransparency = 1,
+    Text = "Close Storage Hunters Hub?",
+    TextColor3 = TextColor,
+    TextSize = 16,
+    Font = Enum.Font.GothamBold,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 502,
+}, ConfirmBox)
+
+New("TextLabel", {
+    Size = UDim2.new(1, -30, 0, 80),
+    Position = UDim2.fromOffset(15, 48),
+    BackgroundTransparency = 1,
+    Text =
+        "This will stop and destroy all active features,\n"
+        .. "farming loops, detectors, and background tasks.\n\n"
+        .. "You will need to relaunch the script to use the hub again.",
+    TextWrapped = true,
+    TextColor3 = MutedText,
+    TextSize = 11,
+    Font = Enum.Font.Gotham,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+    ZIndex = 502,
+}, ConfirmBox)
+
+local CancelCloseButton = New("TextButton", {
+    Size = UDim2.fromOffset(125, 34),
+    Position = UDim2.new(0, 15, 1, -49),
+    BackgroundColor3 = ButtonBackground,
+    Text = "Cancel",
+    TextColor3 = TextColor,
+    TextSize = 12,
+    Font = Enum.Font.GothamBold,
+    BorderSizePixel = 0,
+    ZIndex = 502,
+}, ConfirmBox)
+
+Corner(CancelCloseButton, 7)
+
+local DestroyHubButton = New("TextButton", {
+    Size = UDim2.fromOffset(150, 34),
+    Position = UDim2.new(1, -165, 1, -49),
+    BackgroundColor3 = ThemeColor,
+    Text = "Destroy Hub",
+    TextColor3 = TextColor,
+    TextSize = 12,
+    Font = Enum.Font.GothamBold,
+    BorderSizePixel = 0,
+    ZIndex = 502,
+}, ConfirmBox)
+
+Corner(DestroyHubButton, 7)
+
+--==============================================================
+-- MASTER SHUTDOWN
+--==============================================================
+
+local function DestroyHub()
+    if HubDestroyed then
+        return
+    end
+
+    -- Set this FIRST.
+    -- Any task that wakes from task.wait() now knows to exit.
+    HubDestroyed = true
+
+    -- Disable every feature.
+    State.AutoBasketball = false
+    State.HayCollector = false
+    State.TreeKnocker = false
+    State.PoliceAuction = false
+    State.AutoWash = false
+    State.AutoRepair = false
+    State.AutoMuseumGift = false
+
+    State.AutoBid = false
+    State.InstantUnload = false
+    State.PauseAuction = false
+    State.LostFoundUnloader = false
+    State.Farming = false
+
+    -- Invalidate every active run.
+    RunIds.Basketball += 1
+    RunIds.Hay += 1
+    RunIds.Trees += 1
+    RunIds.Police += 1
+    RunIds.Wash += 1
+    RunIds.Repair += 1
+    RunIds.MuseumGift += 1
+    RunIds.Farming += 1
+    RunIds.Unload += 1
+    RunIds.LostFound += 1
+
+    -- Close temporary UI.
+    pcall(CloseDropdown)
+
+    -- Disconnect persistent listeners / keybinds.
+    for _, connection in ipairs(Connections) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+
+    table.clear(Connections)
+
+    -- Clear transient farming references so this instance leaves no
+    -- active target/pending state behind.
+    FarmingBidGarage = nil
+    FarmingWaitingGarage = nil
+    FarmingCompletedGarage = nil
+    FarmingCurrentGarage = nil
+    PendingGarageEntry = nil
+
+    -- Destroy the entire interface.
+    pcall(function()
+        Gui:Destroy()
+    end)
+
+    -- Only clear the global registry if it still points to THIS copy.
+    if HubEnvironment[HubInstanceKey] == ThisHubInstance then
+        HubEnvironment[HubInstanceKey] = nil
+    end
+end
+
+-- Register the complete shutdown routine only after it exists.
+-- A second execution of this script will call this exact function first.
+ThisHubInstance.Destroy = DestroyHub
+
+TrackConnection(
+    MinimizeButton.MouseButton1Click:Connect(function()
+        if HubDestroyed then
+            return
+        end
+
+        -- Same hide behavior as the comma hotkey.
+        State.HubVisible = false
+        Main.Visible = false
+        ThemePicker.Visible = false
+        CloseDropdown()
+    end)
+)
+
+TrackConnection(
+    CloseButton.MouseButton1Click:Connect(function()
+        if HubDestroyed then
+            return
+        end
+
+        CloseDropdown()
+        ThemePicker.Visible = false
+        ConfirmOverlay.Visible = true
+    end)
+)
+
+TrackConnection(
+    CancelCloseButton.MouseButton1Click:Connect(function()
+        if not HubDestroyed then
+            ConfirmOverlay.Visible = false
+        end
+    end)
+)
+
+TrackConnection(
+    DestroyHubButton.MouseButton1Click:Connect(function()
+        DestroyHub()
+    end)
+)
+
+--==============================================================
+-- KEYBINDS
+--==============================================================
+
+TrackConnection(
+    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if HubDestroyed or gameProcessed then
+            return
+        end
+
+        -- Don't process hotkeys while confirmation is open.
+        if ConfirmOverlay.Visible then
+            return
+        end
+
+        --======================================================
+        -- COMMA = SHOW / HIDE HUB
+        --======================================================
+
+        if input.KeyCode == Enum.KeyCode.Comma then
+            State.HubVisible = not State.HubVisible
+
+            Main.Visible = State.HubVisible
+
+            if not State.HubVisible then
+                ThemePicker.Visible = false
+                CloseDropdown()
+            end
+
+            return
+        end
+
+        --======================================================
+        -- P = AUTO BID
+        -- THIS IS THE ONLY AUTO BID CONTROL
+        --======================================================
+
+        if input.KeyCode == Enum.KeyCode.P then
+            State.AutoBid = not State.AutoBid
+
+            UpdateAutoBidStatus()
+
+            if State.AutoBid then
+                StartAutoBidLoop()
+            end
+
+            -- Exactly one notification from this keypress.
+            Notify(
+                "Auto Bid",
+                State.AutoBid
+                    and "Enabled"
+                    or "Disabled",
+                1.5
+            )
+
+            return
+        end
+    end)
+)
+
+--==============================================================
+--==============================================================
+-- AUTO GRADING V4 - EMBEDDED IN FIFTH TESTS TAB
+-- Initialize asynchronously so missing/slow grading modules cannot block hub launch.
+--==============================================================
+task.spawn(function()
+local GradingEvents = ReplicatedStorage:WaitForChild("Events", 15)
+GradingEvents = GradingEvents and GradingEvents:WaitForChild("Grading", 15)
+local Modules = ReplicatedStorage:WaitForChild("Modules", 15)
+if not GradingEvents or not Modules then
+    warn("[Storage Hunters Hub] Grading remotes/modules unavailable; hub remains usable")
+    return
+end
+local Items, MutatorModule = {}, {}
+local okItems, loadedItems = pcall(function() return require(Modules:WaitForChild("Items")) end)
+if okItems and type(loadedItems)=="table" then Items=loadedItems end
+local okMutators, loadedMutators = pcall(function() return require(Modules:WaitForChild("MutatorModule")) end)
+if okMutators and type(loadedMutators)=="table" then MutatorModule=loadedMutators end
+local alive = true
+local enabled = false
+local busy = false
+local filterMode = "Grade All"
+local selected = {rarities={},mutators={},names={}}
+local attemptMemory = {}
+local messages = {}
+local RARITIES = {"Junk","Uncommon","Rare","Epic","Legendary","Mythical","Exclusive"}
+local MUTATORS, mutatorSeen = {}, {}
+local function addMutator(name)
+    if type(name) ~= "string" or name == "" then return end
+    local key = name:lower()
+    if not mutatorSeen[key] then mutatorSeen[key] = true; table.insert(MUTATORS,name) end
+end
+for _, collection in ipairs({MutatorModule.Mutations or {}, MutatorModule.MiningMutations or {}}) do
+    if type(collection)=="table" then
+        for _,definition in pairs(collection) do
+            if type(definition)=="table" then addMutator(definition.Name) end
+        end
+    end
+end
+if type(MutatorModule._timeMutationIndex)=="table" then
+    for name in pairs(MutatorModule._timeMutationIndex) do addMutator(name) end
+end
+table.sort(MUTATORS,function(a,b) return a:lower()<b:lower() end)
+local function normalize(value) return tostring(value or ""):lower() end
+local function make(class,parent,properties)
+    return New(class,properties,parent)
+end
+local scroll = ThisHubInstance.TestsExtraPage
+local status = make("TextLabel",scroll,{
+    Size=UDim2.new(1,-8,0,28),BackgroundTransparency=1,
+    TextColor3=Color3.fromRGB(185,230,185),Font=Enum.Font.Gotham,
+    TextSize=12,TextXAlignment=Enum.TextXAlignment.Left,Text="Status: Idle"
+})
+local slotStatus = make("TextLabel",scroll,{
+    Size=UDim2.new(1,-8,0,42),BackgroundTransparency=1,
+    TextColor3=Color3.fromRGB(220,205,180),Font=Enum.Font.Gotham,
+    TextSize=11,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,Text="Slots: -"
+})
+local log = make("TextBox",scroll,{
+    Size=UDim2.new(1,-8,0,105),BackgroundColor3=DarkerBackground,
+    TextColor3=Color3.fromRGB(205,230,205),Font=Enum.Font.Code,
+    TextSize=11,TextXAlignment=Enum.TextXAlignment.Left,
+    TextYAlignment=Enum.TextYAlignment.Top,TextWrapped=true,
+    TextEditable=false,MultiLine=true,ClearTextOnFocus=false,Text="Ready."
+})
+Corner(log,6)
+local function report(message)
+    if not alive or HubDestroyed then return end
+    table.insert(messages,tostring(message))
+    while #messages>13 do table.remove(messages,1) end
+    log.Text=table.concat(messages,"\n")
+end
+local function invoke(name,...)
+    local remote=GradingEvents:FindFirstChild(name)
+    if not remote or not remote:IsA("RemoteFunction") then
+        report("Missing RemoteFunction: "..name)
+        return false,nil
+    end
+    local args=table.pack(...)
+    local ok,result=pcall(function() return remote:InvokeServer(table.unpack(args,1,args.n)) end)
+    if not ok then report(name.." ERROR: "..tostring(result)) end
+    return ok,result
+end
+local function button(text,callback)
+    return CreateActionButton(scroll,text,callback)
+end
+local function section(text)
+    make("TextLabel",scroll,{
+        Size=UDim2.new(1,-8,0,27),BackgroundTransparency=1,
+        TextColor3=Color3.fromRGB(255,145,145),Font=Enum.Font.GothamBold,
+        TextSize=14,Text=text
+    })
+end
+local function countSelected(tbl)
+    local count = 0
+
+    for _, value in pairs(tbl) do
+        if value then
+            count += 1
+        end
+    end
+
+    return count
+end
+
+local filterRefreshers = {}
+local function addFilterGroup(label, options, target)
+    section(label)
+
+    local expanded = false
+    local entries = {}
+
+    local heading
+    heading = button(label .. " (0 selected)", function()
+        expanded = not expanded
+
+        for _, entry in ipairs(entries) do
+            entry.Visible = expanded
+        end
+    end)
+
+    for _, option in ipairs(options) do
+        local entry
+
+        entry = button("[ ] " .. option, function()
+            local key = normalize(option)
+
+            target[key] = not target[key]
+
+            entry.Text =
+                (target[key] and "[X] " or "[ ] ") .. option
+
+            heading.Text = label .. " (" ..
+                countSelected(target) .. " selected)"
+        end)
+
+        entry.Visible = false
+        table.insert(entries, entry)
+    end
+    table.insert(filterRefreshers,function()
+        heading.Text=label .. " (" .. countSelected(target) .. " selected)"
+        for i, entry in ipairs(entries) do
+            local name=options[i]
+            entry.Text=(target[normalize(name)] and "[X] " or "[ ] ")..name
+        end
+    end)
+end
+
+-- Resolve item information from ItemId
+local function getItemDetails(entry)
+    if type(entry) ~= "table" then
+        return nil
+    end
+
+    local data = entry.data or entry.Data
+
+    if type(data) ~= "table" then
+        return nil
+    end
+
+    local itemId = data.ItemId or data.itemId
+
+    local definition = Items[itemId]
+        or Items[tostring(itemId)]
+
+    if type(definition) ~= "table" then
+        definition = {}
+    end
+
+    return {
+        id = itemId,
+        name = normalize(definition.Name or data.Name),
+        rarity = normalize(definition.Rarity or data.Rarity),
+        category = normalize(definition.Category),
+        mutators = data.Mutators or data.mutators or {}
+    }
+end
+
+local function hasSelectedMutator(mutators)
+    if type(mutators) ~= "table" then
+        return false
+    end
+
+    for key, value in pairs(mutators) do
+        local mutation
+
+        if type(key) == "number" then
+            if type(value) == "string" then
+                mutation = value
+            elseif type(value) == "table" then
+                mutation = value.Name or value.name
+            end
+        elseif value ~= false and value ~= nil then
+            mutation = key
+        end
+
+        if mutation and selected.mutators[normalize(mutation)] then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function itemMatches(entry)
+    if filterMode == "Grade All" then
+        return true
+    end
+
+    local details = getItemDetails(entry)
+
+    if not details then
+        return false
+    end
+
+    local rarityMatch =
+        selected.rarities[details.rarity] == true
+
+    local nameMatch =
+        selected.names[details.name] == true
+
+    local mutatorMatch =
+        hasSelectedMutator(details.mutators)
+
+    local matches =
+        rarityMatch or nameMatch or mutatorMatch
+
+    local selectedCount =
+        countSelected(selected.rarities)
+        + countSelected(selected.mutators)
+        + countSelected(selected.names)
+
+    if filterMode == "Grade Selected" then
+        if selectedCount == 0 then
+            return false
+        end
+
+        return matches
+    end
+
+    if filterMode == "Exclude Selected" then
+        if selectedCount == 0 then
+            return true
+        end
+
+        return not matches
+    end
+
+    return false
+end
+
+local function getItems()
+    local ok, response = invoke("GetGradableItems")
+
+    if not ok or type(response) ~= "table" then
+        return {}
+    end
+
+    local entries = response.items
+        or response.Items
+        or response
+
+    if type(entries) ~= "table" then
+        return {}
+    end
+
+    local result = {}
+
+    for _, entry in pairs(entries) do
+        if type(entry) == "table" then
+            local guid = entry.guid or entry.Guid
+
+            local source = entry.source
+                or entry.Source
+                or "Inventory"
+
+            if guid and itemMatches(entry) then
+                table.insert(result, {
+                    guid = tostring(guid),
+                    source = source,
+                    details = getItemDetails(entry)
+                })
+            end
+        end
+    end
+
+    return result
+end
+
+local function getState()
+    local ok, response = invoke("GetSlotState")
+
+    if ok
+        and type(response) == "table"
+        and type(response.slots) == "table" then
+        return response
+    end
+
+    return nil
+end
+
+local function getSlot(state, slot)
+    return state.slots[slot]
+        or state.slots[tostring(slot)]
+end
+
+local function remainingTime(info)
+    if type(info) ~= "table" then
+        return nil
+    end
+
+    local start = tonumber(info.StartTime)
+
+    local duration = tonumber(
+        info.RequiredDuration or info.Duration
+    )
+
+    if not start or not duration then
+        return nil
+    end
+
+    return math.max(
+        0,
+        start + duration - workspace:GetServerTimeNow()
+    )
+end
+
+local function attemptAllowed(key, delay)
+    local now = os.clock()
+    local last = attemptMemory[key]
+
+    if last and now - last < delay then
+        return false
+    end
+
+    attemptMemory[key] = now
+    return true
+end
+
+local function verifyEmpty(slot)
+    local state = getState()
+
+    if not state then
+        return false
+    end
+
+    return getSlot(state, slot) == nil
+end
+
+-- Existing V3 occupied-slot processing preserved
+local function handleOccupied(slot, info)
+    local remaining = remainingTime(info)
+
+    if remaining == nil then
+        if attemptAllowed("unknown_" .. slot, 12) then
+            report("Slot " .. slot .. ": unknown timer/state")
+        end
+
+        return "Unknown"
+    end
+
+    if remaining > 0 then
+        return tostring(math.ceil(remaining)) .. "s"
+    end
+
+    local itemKey = tostring(info.ItemGUID or "unknown")
+
+    if attemptAllowed("collect_" .. slot .. "_" .. itemKey, 4) then
+        report("Slot " .. slot .. ": timer done; revealing")
+
+        local ok, result = invoke("CollectGrade", slot)
+
+        if not ok or result == false then
+            report("Slot " .. slot .. ": collect failed")
+            return "Collect retry"
+        end
+
+        task.wait(0.4)
+    end
+
+    if not enabled or not alive then
+        return "Paused"
+    end
+
+    if attemptAllowed("claim_" .. slot .. "_" .. itemKey, 4) then
+        report("Slot " .. slot .. ": claiming")
+
+        local ok, result = invoke("ClaimGradedItem", slot)
+
+        if not ok or result == false then
+            report("Slot " .. slot .. ": claim failed")
+            return "Claim retry"
+        end
+
+        task.wait(0.5)
+
+        if verifyEmpty(slot) then
+            report("Slot " .. slot .. ": cleared successfully")
+            return "Empty"
+        else
+            report("Slot " .. slot ..
+                ": still occupied; retrying")
+            return "Claim retry"
+        end
+    end
+
+    return "Completed"
+end
+
+-- Existing V3 start logic preserved
+local function startItem(slot, used)
+    local items = getItems()
+
+    if #items == 0 then
+        return "No matching items"
+    end
+
+    for _, item in ipairs(items) do
+        if not enabled or not alive then
+            return "Paused"
+        end
+
+        if not used[item.guid]
+            and attemptAllowed(
+                "start_" .. item.guid, 10
+            ) then
+
+            used[item.guid] = true
+
+            report("Slot " .. slot ..
+                ": starting " .. item.guid)
+
+            local ok, result = invoke(
+                "StartGrading",
+                slot,
+                item.guid,
+                item.source,
+                nil
+            )
+
+            if ok and result ~= false then
+                task.wait(0.4)
+
+                local state = getState()
+
+                if state and getSlot(state, slot) ~= nil then
+                    report("Slot " .. slot ..
+                        ": grading started")
+                    return "Started"
+                end
+
+                report("Slot " .. slot ..
+                    ": start not confirmed")
+            end
+        end
+    end
+
+    return "No start"
+end
+
+local function process()
+    local state = getState()
+
+    if not state then
+        status.Text = "Status: Failed to read slots"
+        return
+    end
+
+    local unlocked = math.clamp(
+        tonumber(state.unlockedCount) or 0,
+        0,
+        3
+    )
+
+    local used = {}
+    local display = {}
+
+    for slot = 1, unlocked do
+        if not enabled or not alive then
+            break
+        end
+
+        local info = getSlot(state, slot)
+        local result
+
+        if info == nil then
+            result = startItem(slot, used)
+        else
+            result = handleOccupied(slot, info)
+        end
+
+        table.insert(
+            display,
+            tostring(slot) .. ": " .. tostring(result)
+        )
+    end
+
+    slotStatus.Text = "Slots: " .. table.concat(display, " | ")
+    status.Text = "Status: Auto Grading ON"
+end
+
+-- Automation toggle
+section("AUTO GRADING V4")
+section("AUTOMATION")
+
+local toggle
+toggle = button("AUTO GRADING: OFF", function()
+    enabled = not enabled
+
+    toggle.Text = "AUTO GRADING: " ..
+        (enabled and "ON" or "OFF")
+
+    toggle.BackgroundColor3 = enabled
+        and Color3.fromRGB(35, 115, 65)
+        or Color3.fromRGB(65, 35, 43)
+
+    report("Auto Grading " ..
+        (enabled and "enabled" or "disabled"))
+end)
+
+local modeButton
+modeButton = button("MODE: Grade All", function()
+    if filterMode == "Grade All" then
+        filterMode = "Grade Selected"
+    elseif filterMode == "Grade Selected" then
+        filterMode = "Exclude Selected"
+    else
+        filterMode = "Grade All"
+    end
+
+    modeButton.Text = "MODE: " .. filterMode
+    report("Filter mode: " .. filterMode)
+end)
+
+-- Sorting controls
+section("SORTING FILTERS")
+
+addFilterGroup(
+    "RARITY FILTERS",
+    RARITIES,
+    selected.rarities
+)
+
+addFilterGroup(
+    "MUTATOR FILTERS",
+    MUTATORS,
+    selected.mutators
+)
+
+section("ITEM NAME FILTER")
+
+local nameBox = make("TextBox", scroll, {
+    Size = UDim2.new(1, -8, 0, 32),
+    BackgroundColor3 = Color3.fromRGB(40, 40, 47),
+    TextColor3 = Color3.new(1, 1, 1),
+    PlaceholderText = "Enter exact item name",
+    Text = "",
+    TextSize = 13,
+    ClearTextOnFocus = false
+})
+make("UICorner", nameBox)
+
+button("Add Item Name", function()
+    local name = normalize(
+        nameBox.Text:match("^%s*(.-)%s*$")
+    )
+
+    if name ~= "" then
+        selected.names[name] = true
+        report("Name selected: " .. name)
+        nameBox.Text = ""
+    end
+end)
+
+button("Clear Item Names", function()
+    selected.names = {}
+    report("Name selections cleared")
+end)
+
+section("SELECTED OPTIONS")
+
+button("Show Selected Filters", function()
+    report("Mode: " .. filterMode)
+
+    for name, value in pairs(selected.rarities) do
+        if value then report("Rarity: " .. name) end
+    end
+
+    for name, value in pairs(selected.mutators) do
+        if value then report("Mutator: " .. name) end
+    end
+
+    for name, value in pairs(selected.names) do
+        if value then report("Item: " .. name) end
+    end
+end)
+
+button("Clear All Filters", function()
+    table.clear(selected.rarities)
+    table.clear(selected.mutators)
+    table.clear(selected.names)
+
+    report("All filters cleared")
+    for _,refresh in ipairs(filterRefreshers) do refresh() end
+end)
+
+-- Diagnostics
+section("DIAGNOSTICS")
+
+button("Scan Matching Items", function()
+    local items = getItems()
+
+    report("Matching gradable items: " .. tostring(#items))
+
+    for index = 1, math.min(3, #items) do
+        local details = items[index].details
+
+        if details then
+            report(
+                tostring(details.name) ..
+                " | " .. tostring(details.rarity)
+            )
+        end
+    end
+end)
+
+button("Check Grading Slots", function()
+    local state = getState()
+
+    if not state then
+        report("Failed to read grading slots")
+        return
+    end
+
+    report("Unlocked slots: " .. tostring(state.unlockedCount))
+
+    for slot = 1, 3 do
+        local info = getSlot(state, slot)
+
+        if info == nil then
+            report("Slot " .. slot .. ": empty")
+        else
+            local remaining = remainingTime(info)
+
+            report(
+                "Slot " .. slot .. ": " ..
+                (remaining and
+                    tostring(math.ceil(remaining)) .. "s remaining"
+                    or "unknown")
+            )
+        end
+    end
+end)
+
+button("Clear Debug Log", function()
+    table.clear(messages)
+    log.Text = ""
+end)
+
+
+-- Grading worker tied to the existing hub lifecycle
+local function stopGrading()
+    alive=false
+    enabled=false
+end
+local priorDestroy = ThisHubInstance.Destroy
+ThisHubInstance.Destroy = function(...)
+    stopGrading()
+    return priorDestroy(...)
+end
+task.spawn(function()
+    while alive and not HubDestroyed do
+        if enabled and not busy then
+            busy=true
+            local ok,err=pcall(process)
+            if not ok then report("Worker error: "..tostring(err)) end
+            busy=false
+        end
+        task.wait(1)
+    end
+end)
+report("Auto Grading V4 embedded in Tests tab")
+report("Mutators detected: "..tostring(#MUTATORS))
+end)
+
+-- FIFTH TESTS TAB
+-- Uses ThisHubInstance (a Lua table), so execution continues into
+-- all of the original feature setup below/above without Instance-field errors.
+--==============================================================
+
+TrackConnection(ThisHubInstance.TestsExtraTabButton.MouseButton1Click:Connect(function()
+    if HubDestroyed then
+        return
+    end
+
+    MainPage.Visible = false
+    FarmingPage.Visible = false
+    ShopPage.Visible = false
+    TestsPage.Visible = false
+    ThisHubInstance.TestsExtraPage.Visible = true
+
+    MainTabButton.BackgroundColor3 = ButtonBackground
+    FarmingTabButton.BackgroundColor3 = ButtonBackground
+    ShopTabButton.BackgroundColor3 = ButtonBackground
+    TestsTabButton.BackgroundColor3 = ButtonBackground
+    ThisHubInstance.TestsExtraTabButton.BackgroundColor3 = ThemeColor
+end))
+
+TrackConnection(MainTabButton.MouseButton1Click:Connect(function()
+    ThisHubInstance.TestsExtraPage.Visible = false
+    ThisHubInstance.TestsExtraTabButton.BackgroundColor3 = ButtonBackground
+end))
+
+TrackConnection(FarmingTabButton.MouseButton1Click:Connect(function()
+    ThisHubInstance.TestsExtraPage.Visible = false
+    ThisHubInstance.TestsExtraTabButton.BackgroundColor3 = ButtonBackground
+end))
+
+TrackConnection(ShopTabButton.MouseButton1Click:Connect(function()
+    ThisHubInstance.TestsExtraPage.Visible = false
+    ThisHubInstance.TestsExtraTabButton.BackgroundColor3 = ButtonBackground
+end))
+
+TrackConnection(TestsTabButton.MouseButton1Click:Connect(function()
+    ThisHubInstance.TestsExtraPage.Visible = false
+    ThisHubInstance.TestsExtraTabButton.BackgroundColor3 = ButtonBackground
+end))
+
+--==============================================================
+-- INITIALIZATION
+--==============================================================
+
+ShowMain()
+RefreshAuctionDropdown()
+UpdateAutoBidStatus()
+
+Notify(
+    "Storage Hunters Hub",
+    "Loaded - Press , to show/hide",
+    2
+)
