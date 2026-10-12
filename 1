@@ -1,0 +1,209 @@
+-- STORAGE HUNTERS | ROD DETECTOR
+-- Standalone diagnostic GUI
+
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local old = playerGui:FindFirstChild("SH_RodDetector")
+if old then old:Destroy() end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "SH_RodDetector"
+gui.ResetOnSpawn = false
+gui.Parent = playerGui
+
+local main = Instance.new("Frame")
+main.Size = UDim2.fromOffset(390, 350)
+main.Position = UDim2.new(0.5, -195, 0.5, -175)
+main.BackgroundColor3 = Color3.fromRGB(30, 25, 28)
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.Parent = gui
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -50, 0, 40)
+title.Position = UDim2.fromOffset(12, 0)
+title.BackgroundTransparency = 1
+title.Text = "FISHING ROD DETECTOR"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 16
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = main
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.fromOffset(30, 28)
+close.Position = UDim2.new(1, -38, 0, 6)
+close.BackgroundColor3 = Color3.fromRGB(155, 45, 55)
+close.Text = "X"
+close.TextColor3 = Color3.new(1, 1, 1)
+close.Font = Enum.Font.GothamBold
+close.TextSize = 14
+close.Parent = main
+Instance.new("UICorner", close).CornerRadius = UDim.new(0, 6)
+
+local scan = Instance.new("TextButton")
+scan.Size = UDim2.new(1, -24, 0, 38)
+scan.Position = UDim2.fromOffset(12, 48)
+scan.BackgroundColor3 = Color3.fromRGB(140, 42, 52)
+scan.Text = "SCAN INVENTORY"
+scan.TextColor3 = Color3.new(1, 1, 1)
+scan.Font = Enum.Font.GothamBold
+scan.TextSize = 13
+scan.Parent = main
+Instance.new("UICorner", scan).CornerRadius = UDim.new(0, 6)
+
+local output = Instance.new("ScrollingFrame")
+output.Size = UDim2.new(1, -24, 1, -105)
+output.Position = UDim2.fromOffset(12, 95)
+output.BackgroundColor3 = Color3.fromRGB(22, 20, 22)
+output.BorderSizePixel = 0
+output.ScrollBarThickness = 5
+output.AutomaticCanvasSize = Enum.AutomaticSize.Y
+output.CanvasSize = UDim2.fromOffset(0, 0)
+output.Parent = main
+Instance.new("UICorner", output).CornerRadius = UDim.new(0, 6)
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 5)
+layout.Parent = output
+
+local function addLine(message, color)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -10, 0, 0)
+    label.AutomaticSize = Enum.AutomaticSize.Y
+    label.BackgroundTransparency = 1
+    label.Text = tostring(message)
+    label.TextWrapped = true
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextColor3 = color or Color3.fromRGB(220, 220, 220)
+    label.Font = Enum.Font.Code
+    label.TextSize = 12
+    label.Parent = output
+end
+
+local function clear()
+    for _, child in ipairs(output:GetChildren()) do
+        if child:IsA("TextLabel") then
+            child:Destroy()
+        end
+    end
+end
+
+local function scanInventory()
+    clear()
+    addLine("Scanning inventory...", Color3.fromRGB(255, 210, 120))
+
+    local remote = RS:FindFirstChild("Events")
+    remote = remote and remote:FindFirstChild("Inventory")
+    remote = remote and remote:FindFirstChild("GetPlayerInventory")
+
+    if not remote then
+        addLine("GetPlayerInventory not found.", Color3.fromRGB(255, 100, 100))
+        return
+    end
+
+    local success, inventory = pcall(function()
+        return remote:InvokeServer()
+    end)
+
+    if not success or type(inventory) ~= "table" then
+        addLine("Inventory request failed.", Color3.fromRGB(255, 100, 100))
+        return
+    end
+
+    local found = 0
+    local inspected = 0
+
+    local function inspect(tbl, depth)
+        if depth > 5 or inspected > 1000 then return end
+
+        for key, value in pairs(tbl) do
+            if type(value) == "table" then
+                inspected += 1
+
+                local name = tostring(
+                    value.Name or value.name
+                    or value.ItemName or value.itemName
+                    or value.DisplayName or value.displayName
+                    or ""
+                )
+
+                local category = tostring(
+                    value.Category or value.category
+                    or value.Type or value.type
+                    or ""
+                )
+
+                local combined = (name .. " " .. category):lower()
+
+                if combined:find("fish")
+                    or combined:find("rod") then
+
+                    found += 1
+
+                    local guid = value.UUID or value.uuid
+                        or value.Guid or value.guid
+                        or value.Id or value.id
+                        or key
+
+                    local mutators = value.Mutators or value.mutators
+
+                    local broken = value.Broken == true
+                        or value.IsBroken == true
+
+                    if type(mutators) == "table" then
+                        for mk, mv in pairs(mutators) do
+                            if tostring(mk):lower() == "broken"
+                                and mv ~= false then
+                                broken = true
+                            end
+
+                            if tostring(mv):lower() == "broken" then
+                                broken = true
+                            end
+                        end
+                    end
+
+                    addLine("------------------------------")
+                    addLine("NAME: " .. name)
+                    addLine("CATEGORY: " .. category)
+                    addLine("GUID: " .. tostring(guid))
+                    addLine(
+                        "BROKEN: " .. tostring(broken),
+                        broken and Color3.fromRGB(255, 100, 100)
+                            or Color3.fromRGB(100, 255, 150)
+                    )
+                end
+
+                inspect(value, depth + 1)
+            end
+        end
+    end
+
+    inspect(inventory, 0)
+
+    if found == 0 then
+        addLine("No rods matched name/category search.",
+            Color3.fromRGB(255, 190, 100))
+        addLine("The game may store rod names in an item database.")
+    else
+        addLine("Detected " .. found .. " possible rods.",
+            Color3.fromRGB(100, 255, 150))
+    end
+end
+
+scan.MouseButton1Click:Connect(function()
+    task.spawn(scanInventory)
+end)
+
+close.MouseButton1Click:Connect(function()
+    gui:Destroy()
+end)
+
+addLine("Equip a fishing rod, then press SCAN INVENTORY.")
