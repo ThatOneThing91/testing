@@ -1,0 +1,194 @@
+
+--------------------------------------------------
+-- V15 FISH / ZONE FOLLOW CONTROLLER
+--------------------------------------------------
+
+local FOLLOW_INTERVAL = 0.025
+local FOLLOW_LOOKAHEAD = 0.12
+local FOLLOW_DEADZONE = 0.018
+local FOLLOW_MIN_SWITCH = 0.055
+
+local previousZoneX = nil
+local previousZoneTime = nil
+local smoothedFishVelocity = 0
+local smoothedZoneVelocity = 0
+
+local function resetReelTracking()
+    releaseMouse()
+
+    lastInputChange = 0
+    previousFishX = nil
+    previousSampleTime = nil
+
+    previousZoneX = nil
+    previousZoneTime = nil
+
+    smoothedFishVelocity = 0
+    smoothedZoneVelocity = 0
+
+    nextReelAction = 0
+    reelHoldNext = true
+end
+
+local function updateReeling()
+    if phase ~= "reeling" then
+        releaseMouse()
+        return
+    end
+
+    local now = os.clock()
+
+    if now < nextReelAction then
+        return
+    end
+
+    if trackingEnabled then
+        local catchBar, fish, zone = getReelGui()
+
+        if catchBar and fish and zone then
+            local trackX = catchBar.AbsolutePosition.X
+            local trackWidth = math.max(
+                catchBar.AbsoluteSize.X, 1
+            )
+
+            local fishX = (
+                fish.AbsolutePosition.X
+                + fish.AbsoluteSize.X / 2
+                - trackX
+            ) / trackWidth
+
+            local zoneX = (
+                zone.AbsolutePosition.X
+                + zone.AbsoluteSize.X / 2
+                - trackX
+            ) / trackWidth
+
+            local dt = previousSampleTime
+                and math.max(
+                    now - previousSampleTime,
+                    0.01
+                )
+                or FOLLOW_INTERVAL
+
+            if previousFishX then
+                local velocity = math.clamp(
+                    (fishX - previousFishX) / dt,
+                    -4, 4
+                )
+
+                smoothedFishVelocity =
+                    smoothedFishVelocity * 0.65
+                    + velocity * 0.35
+            end
+
+            if previousZoneX then
+                local velocity = math.clamp(
+                    (zoneX - previousZoneX) / dt,
+                    -4, 4
+                )
+
+                smoothedZoneVelocity =
+                    smoothedZoneVelocity * 0.65
+                    + velocity * 0.35
+            end
+
+            previousFishX = fishX
+            previousZoneX = zoneX
+            previousSampleTime = now
+
+            -- Predict where both will be shortly.
+            local predictedFish = math.clamp(
+                fishX
+                + smoothedFishVelocity * FOLLOW_LOOKAHEAD,
+                0, 1
+            )
+
+            local predictedZone = math.clamp(
+                zoneX
+                + smoothedZoneVelocity * FOLLOW_LOOKAHEAD,
+                0, 1
+            )
+
+            local error = predictedFish - predictedZone
+
+            -- Reduce movement near the target.
+            local deadzone = FOLLOW_DEADZONE
+
+            if math.abs(smoothedFishVelocity) > 0.35 then
+                deadzone = 0.012
+            end
+
+            local desiredHold
+
+            if error > deadzone then
+                desiredHold = true
+            elseif error < -deadzone then
+                desiredHold = false
+            else
+                -- Inside the target range:
+                -- counter existing Zone momentum.
+                if smoothedZoneVelocity > 0.06 then
+                    desiredHold = false
+                elseif smoothedZoneVelocity < -0.06 then
+                    desiredHold = true
+                else
+                    desiredHold = mouseHeld
+                end
+            end
+
+            if now - lastInputChange >= FOLLOW_MIN_SWITCH then
+                if desiredHold and not mouseHeld then
+                    if holdMouse() then
+                        lastInputChange = now
+                    end
+
+                elseif not desiredHold and mouseHeld then
+                    releaseMouse()
+                    lastInputChange = now
+                end
+            end
+
+            local insideZone =
+                math.abs(fishX - zoneX)
+                <= (
+                    zone.AbsoluteSize.X
+                    - fish.AbsoluteSize.X
+                ) / (2 * trackWidth)
+
+            trackingLabel.Text = string.format(
+                "Fish %.3f | Zone %.3f | Error %+.3f",
+                fishX,
+                zoneX,
+                error
+            )
+
+            reelLabel.Text = string.format(
+                "%s | %s",
+                insideZone and "FISH IN ZONE"
+                    or "FISH OUTSIDE ZONE",
+                mouseHeld and "HOLD" or "RELEASE"
+            )
+
+            nextReelAction = now + FOLLOW_INTERVAL
+            return
+        end
+
+        trackingLabel.Text =
+            "Tracking: Fishing GUI unavailable"
+    else
+        trackingLabel.Text = "Tracking: Timed mode"
+    end
+
+    -- Preserve 1.5s hold / 0.5s release fallback.
+    if reelHoldNext then
+        holdMouse()
+        reelLabel.Text = "Reel: Hold 1.5s"
+        nextReelAction = now + FALLBACK_HOLD
+    else
+        releaseMouse()
+        reelLabel.Text = "Reel: Release 0.5s"
+        nextReelAction = now + FALLBACK_RELEASE
+    end
+
+    reelHoldNext = not reelHoldNext
+end
