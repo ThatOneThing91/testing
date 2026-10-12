@@ -1,0 +1,370 @@
+
+-- STORAGE HUNTERS | FISHING GUI DETECTOR V1
+-- Standalone diagnostic; does not modify Auto Fishing.
+
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local env = (getgenv and getgenv()) or _G
+
+if type(env.SH_FishingDetectorCleanup) == "function" then
+    pcall(env.SH_FishingDetectorCleanup)
+end
+
+local old = playerGui:FindFirstChild("SH_FishingDetector")
+if old then old:Destroy() end
+
+local alive = true
+local watching = false
+local watchToken = 0
+local connections = {}
+local previous = {}
+local results = {}
+local MAX_RESULTS = 90
+
+local function visible(obj)
+    if not obj:IsA("GuiObject") or not obj.Visible then
+        return false
+    end
+
+    local parent = obj.Parent
+    while parent and parent ~= playerGui do
+        if parent:IsA("GuiObject") and not parent.Visible then
+            return false
+        end
+        parent = parent.Parent
+    end
+
+    return true
+end
+
+local function relevant(obj)
+    local path = obj:GetFullName():lower()
+
+    if path:find("sh_fishingdetector", 1, true)
+        or path:find("sh_fishingv", 1, true)
+        or path:find("boombox", 1, true)
+        or path:find("accessoryguide", 1, true)
+        or path:find("authenticationpanel", 1, true) then
+        return false
+    end
+
+    return true
+end
+
+local function score(obj)
+    local name = obj.Name:lower()
+    local path = obj:GetFullName():lower()
+    local s = 0
+
+    for _, word in ipairs({
+        "fish", "reel", "minigame", "target",
+        "cursor", "indicator", "needle",
+        "marker", "tension", "progress",
+        "bar", "track", "zone", "gold"
+    }) do
+        if name:find(word, 1, true) then
+            s += 4
+        end
+    end
+
+    if path:find("fish", 1, true)
+        or path:find("reel", 1, true)
+        or path:find("minigame", 1, true) then
+        s += 5
+    end
+
+    local camera = workspace.CurrentCamera
+    if camera then
+        local viewport = camera.ViewportSize
+        local pos = obj.AbsolutePosition
+        local size = obj.AbsoluteSize
+
+        if pos.Y >= viewport.Y * 0.05
+            and pos.Y <= viewport.Y * 0.65
+            and size.X > 1 and size.Y > 1 then
+            s += 1
+        end
+    end
+
+    return s
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "SH_FishingDetector"
+gui.ResetOnSpawn = false
+gui.Parent = playerGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(430, 400)
+frame.Position = UDim2.new(0.03, 0, 0.2, 0)
+frame.BackgroundColor3 = Color3.fromRGB(27, 24, 29)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(170, 45, 55)
+stroke.Thickness = 1.5
+stroke.Parent = frame
+
+local function makeText(text, x, y, w, h, size)
+    local obj = Instance.new("TextLabel")
+    obj.BackgroundTransparency = 1
+    obj.Position = UDim2.fromOffset(x, y)
+    obj.Size = UDim2.fromOffset(w, h)
+    obj.Text = text
+    obj.TextColor3 = Color3.fromRGB(240, 240, 240)
+    obj.Font = Enum.Font.Code
+    obj.TextSize = size or 12
+    obj.TextXAlignment = Enum.TextXAlignment.Left
+    obj.TextWrapped = true
+    obj.Parent = frame
+    return obj
+end
+
+local function makeButton(text, x, y, w, callback)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.fromOffset(w, 32)
+    b.Position = UDim2.fromOffset(x, y)
+    b.BackgroundColor3 = Color3.fromRGB(115, 42, 50)
+    b.TextColor3 = Color3.new(1, 1, 1)
+    b.Text = text
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 11
+    b.Parent = frame
+
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+
+    b.MouseButton1Click:Connect(callback)
+    return b
+end
+
+makeText("FISHING GUI DETECTOR", 12, 8, 330, 28, 16)
+
+local status = makeText(
+    "Start fishing, then scan while the reel bar is visible.",
+    12, 43, 405, 36, 11
+)
+
+local output = Instance.new("ScrollingFrame")
+output.Position = UDim2.fromOffset(12, 125)
+output.Size = UDim2.new(1, -24, 1, -140)
+output.BackgroundColor3 = Color3.fromRGB(18, 18, 21)
+output.BorderSizePixel = 0
+output.ScrollBarThickness = 5
+output.AutomaticCanvasSize = Enum.AutomaticSize.Y
+output.CanvasSize = UDim2.fromOffset(0, 0)
+output.Parent = frame
+Instance.new("UICorner", output).CornerRadius = UDim.new(0, 5)
+
+local content = Instance.new("TextLabel")
+content.Size = UDim2.new(1, -12, 0, 0)
+content.AutomaticSize = Enum.AutomaticSize.Y
+content.Position = UDim2.fromOffset(6, 5)
+content.BackgroundTransparency = 1
+content.Text = "No results yet."
+content.TextColor3 = Color3.fromRGB(225, 225, 225)
+content.TextSize = 11
+content.Font = Enum.Font.Code
+content.TextXAlignment = Enum.TextXAlignment.Left
+content.TextYAlignment = Enum.TextYAlignment.Top
+content.TextWrapped = true
+content.Parent = output
+
+local function refresh()
+    if not alive then return end
+    content.Text = table.concat(results, "\n\n")
+    if #results == 0 then
+        content.Text = "No results yet."
+    end
+end
+
+local function push(line)
+    table.insert(results, line)
+
+    while #results > MAX_RESULTS do
+        table.remove(results, 1)
+    end
+
+    refresh()
+end
+
+local function describe(obj, prefix)
+    local pos = obj.AbsolutePosition
+    local size = obj.AbsoluteSize
+
+    return string.format(
+        "%s %s\n%s\nPOS: %.0f, %.0f | SIZE: %.0f, %.0f",
+        prefix,
+        obj.ClassName,
+        obj:GetFullName(),
+        pos.X, pos.Y,
+        size.X, size.Y
+    )
+end
+
+local function scan()
+    if not alive then return end
+
+    local candidates = {}
+
+    for _, obj in ipairs(playerGui:GetDescendants()) do
+        if visible(obj) and relevant(obj) then
+            local s = score(obj)
+
+            if s >= 4 then
+                table.insert(candidates, {
+                    obj = obj,
+                    score = s
+                })
+            end
+        end
+    end
+
+    table.sort(candidates, function(a, b)
+        return a.score > b.score
+    end)
+
+    results = {}
+
+    push("=== ACTIVE GUI SCAN ===")
+    push("Candidates found: " .. #candidates)
+
+    for i = 1, math.min(#candidates, 30) do
+        local entry = candidates[i]
+        push(describe(entry.obj, "[" .. i .. "]"))
+    end
+
+    status.Text = "Scan complete: " .. #candidates .. " candidates"
+end
+
+local function capturePositions()
+    local snapshot = {}
+
+    for _, obj in ipairs(playerGui:GetDescendants()) do
+        if visible(obj) and relevant(obj) then
+            local pos = obj.AbsolutePosition
+            local size = obj.AbsoluteSize
+
+            if size.X > 1 and size.Y > 1 then
+                snapshot[obj] = {
+                    x = pos.X,
+                    y = pos.Y,
+                    sx = size.X,
+                    sy = size.Y,
+                    score = score(obj)
+                }
+            end
+        end
+    end
+
+    return snapshot
+end
+
+local function watchStep()
+    local current = capturePositions()
+    local changes = {}
+
+    for obj, data in pairs(current) do
+        local oldData = previous[obj]
+
+        if oldData then
+            local dx = math.abs(data.x - oldData.x)
+            local dy = math.abs(data.y - oldData.y)
+
+            if (dx >= 3 or dy >= 3)
+                and (data.score >= 4 or oldData.score >= 4) then
+
+                table.insert(changes, {
+                    obj = obj,
+                    distance = dx + dy
+                })
+            end
+        end
+    end
+
+    table.sort(changes, function(a, b)
+        return a.distance > b.distance
+    end)
+
+    for i = 1, math.min(#changes, 4) do
+        push(describe(changes[i].obj, "[MOVING]"))
+    end
+
+    previous = current
+end
+
+makeButton("SCAN ACTIVE GUI", 12, 85, 132, scan)
+
+local watchButton
+watchButton = makeButton("WATCH: OFF", 152, 85, 114, function()
+    watching = not watching
+    watchToken += 1
+
+    watchButton.Text = watching
+        and "WATCH: ON"
+        or "WATCH: OFF"
+
+    if not watching then
+        status.Text = "GUI watch stopped."
+        return
+    end
+
+    previous = capturePositions()
+    local token = watchToken
+    status.Text = "Watching moving GUI elements..."
+
+    task.spawn(function()
+        while alive and watching and token == watchToken do
+            task.wait(0.25)
+
+            if alive and watching and token == watchToken then
+                watchStep()
+            end
+        end
+    end)
+end)
+
+makeButton("COPY RESULTS", 274, 85, 142, function()
+    local text = table.concat(results, "\n\n")
+
+    if type(setclipboard) == "function" then
+        local ok = pcall(setclipboard, text)
+
+        status.Text = ok
+            and "Results copied to clipboard."
+            or "Clipboard failed."
+    else
+        status.Text = "Clipboard not supported by executor."
+        print(text)
+    end
+end)
+
+local function cleanup()
+    if not alive then return end
+
+    alive = false
+    watching = false
+    watchToken += 1
+
+    for _, connection in ipairs(connections) do
+        connection:Disconnect()
+    end
+
+    gui:Destroy()
+
+    if env.SH_FishingDetectorCleanup == cleanup then
+        env.SH_FishingDetectorCleanup = nil
+    end
+end
+
+local close = makeButton("X", 391, 8, 27, cleanup)
+close.Size = UDim2.fromOffset(27, 27)
+
+env.SH_FishingDetectorCleanup = cleanup
+
+print("[Fishing GUI Detector] Ready")
