@@ -1,0 +1,653 @@
+-- STORAGE HUNTERS | AUTO FISHING TEST V5
+-- Dynamic water targeting + equipped rod detection
+-- Standalone GUI; does not modify your main hub
+
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local env = (getgenv and getgenv()) or _G
+
+-- Stop previous test instances
+for _, key in ipairs({
+    "SH_FishingV5Cleanup",
+    "SH_FishingV4Cleanup",
+    "SH_AutoFishingCleanup"
+}) do
+    if type(env[key]) == "function" then
+        pcall(env[key])
+    end
+end
+
+for _, name in ipairs({
+    "SH_FishingV5",
+    "SH_FishingV4",
+    "SH_AutoFishing_Test"
+}) do
+    local old = playerGui:FindFirstChild(name)
+    if old then old:Destroy() end
+end
+
+local knownRodIds = env.SH_KnownFishingRodIds or {}
+knownRodIds[330] = true
+knownRodIds[374] = true
+env.SH_KnownFishingRodIds = knownRodIds
+
+local running = false
+local destroyed = false
+local busy = false
+local session = 0
+local phase = "idle"
+local phaseStarted = 0
+local activeCastId = nil
+local currentRodGuid = nil
+local casts, catches, failures = 0, 0, 0
+local connections = {}
+local failedRodGuids = {}
+
+local function remote(...)
+    local obj = RS
+    for _, name in ipairs({...}) do
+        obj = obj:FindFirstChild(name)
+        if not obj then return nil end
+    end
+    return obj
+end
+
+local Events = {
+    Cast = remote("Events", "Misc", "FishingCast"),
+    Result = remote("Events", "Misc", "FishingResult"),
+    Cancel = remote("Events", "Misc", "FishingCancel"),
+    State = remote("Events", "Misc", "FishingState"),
+    Inventory = remote("Events", "Inventory", "GetPlayerInventory"),
+    Equip = remote("Events", "Inventory", "EquipItem")
+}
+
+-- GUI
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "SH_FishingV5"
+gui.ResetOnSpawn = false
+gui.Parent = playerGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(365, 365)
+frame.Position = UDim2.new(0.5, -182, 0.5, -182)
+frame.BackgroundColor3 = Color3.fromRGB(29, 24, 27)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 9)
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(170, 45, 55)
+stroke.Thickness = 1.5
+stroke.Parent = frame
+
+local function makeLabel(text, y, h, size)
+    local obj = Instance.new("TextLabel")
+    obj.Position = UDim2.fromOffset(12, y)
+    obj.Size = UDim2.new(1, -24, 0, h)
+    obj.BackgroundTransparency = 1
+    obj.Text = text
+    obj.TextColor3 = Color3.fromRGB(230, 230, 230)
+    obj.Font = Enum.Font.Gotham
+    obj.TextSize = size or 13
+    obj.TextWrapped = true
+    obj.TextXAlignment = Enum.TextXAlignment.Left
+    obj.Parent = frame
+    return obj
+end
+
+local title = makeLabel("AUTO FISHING | TEST V5", 8, 30, 16)
+title.Font = Enum.Font.GothamBold
+
+local status = makeLabel("Status: Ready", 47, 43, 13)
+local phaseLabel = makeLabel("Session: Idle", 94, 23, 12)
+local statsLabel = makeLabel("Casts: 0 | Catches: 0 | Failed: 0", 123, 25, 12)
+local rodLabel = makeLabel("Rod: Not selected", 155, 38, 12)
+local waterLabel = makeLabel("Water: Searching nearby...", 194, 36, 12)
+
+local function makeButton(text, y, color)
+    local b = Instance.new("TextButton")
+    b.Position = UDim2.fromOffset(12, y)
+    b.Size = UDim2.new(1, -24, 0, 39)
+    b.BackgroundColor3 = color
+    b.Text = text
+    b.TextColor3 = Color3.new(1, 1, 1)
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 13
+    b.Parent = frame
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
+    return b
+end
+
+local toggle = makeButton(
+    "AUTO FISHING: OFF", 237,
+    Color3.fromRGB(65, 65, 65)
+)
+
+local learn = makeButton(
+    "LEARN EQUIPPED ROD", 284,
+    Color3.fromRGB(115, 45, 55)
+)
+
+local info = makeLabel(
+    "Known rod IDs: 330, 374",
+    332, 25, 11
+)
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.fromOffset(29, 28)
+close.Position = UDim2.new(1, -37, 0, 7)
+close.BackgroundColor3 = Color3.fromRGB(155, 40, 50)
+close.Text = "X"
+close.TextColor3 = Color3.new(1, 1, 1)
+close.Font = Enum.Font.GothamBold
+close.Parent = frame
+Instance.new("UICorner", close).CornerRadius = UDim.new(0, 6)
+
+local function setStatus(s)
+    if not destroyed then status.Text = "Status: " .. tostring(s) end
+end
+
+local function setPhase(s)
+    phase = s
+    phaseStarted = os.clock()
+    if not destroyed then phaseLabel.Text = "Session: " .. s end
+end
+
+local function updateStats()
+    if destroyed then return end
+    statsLabel.Text = string.format(
+        "Casts: %d | Catches: %d | Failed: %d",
+        casts, catches, failures
+    )
+end
+
+local function updateToggle()
+    if destroyed then return end
+    toggle.Text = running and "AUTO FISHING: ON" or "AUTO FISHING: OFF"
+    toggle.BackgroundColor3 = running
+        and Color3.fromRGB(35, 125, 65)
+        or Color3.fromRGB(65, 65, 65)
+end
+
+local function getCharacter()
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    return character, root
+end
+
+local function getEquippedRod()
+    local character = player.Character
+    if not character then return nil end
+
+    for _, obj in ipairs(character:GetChildren()) do
+        if obj:IsA("Tool") then
+            local id = tonumber(
+                obj:GetAttribute("ItemId")
+                or obj:GetAttribute("ItemID")
+                or obj:GetAttribute("itemId")
+            )
+
+            if id and knownRodIds[id] then
+                return obj, id
+            end
+        end
+    end
+
+    return nil
+end
+
+local function isBroken(item)
+    if item.Broken == true or item.IsBroken == true then
+        return true
+    end
+
+    if tonumber(item.Condition) == 0 then
+        return true
+    end
+
+    for key, value in pairs(item.Mutators or {}) do
+        if tostring(key):lower() == "broken" and value ~= false then
+            return true
+        end
+
+        if tostring(value):lower() == "broken" then
+            return true
+        end
+
+        if type(value) == "table" then
+            local name = value.Name or value.name or value.Mutator
+            if tostring(name):lower() == "broken" then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function getInventory()
+    local ok, data = pcall(function()
+        return Events.Inventory:InvokeServer()
+    end)
+
+    if not ok or type(data) ~= "table" then return nil end
+
+    return data.Inventory or data.Items or data
+end
+
+local function findUsableRod()
+    local inventory = getInventory()
+    if not inventory then return nil, "Inventory unavailable" end
+
+    local rods = {}
+
+    for guid, item in pairs(inventory) do
+        if type(item) == "table" then
+            local id = tonumber(item.ItemId)
+
+            if id and knownRodIds[id] and not isBroken(item) then
+                local actualGuid = item.Guid or item.UUID or guid
+
+                if type(actualGuid) == "string"
+                    and not failedRodGuids[actualGuid] then
+                    table.insert(rods, {
+                        guid = actualGuid,
+                        id = id,
+                        condition = tonumber(item.Condition) or 0
+                    })
+                end
+            end
+        end
+    end
+
+    table.sort(rods, function(a, b)
+        return a.condition > b.condition
+    end)
+
+    return rods[1], "No usable fishing rods"
+end
+
+local function ensureRodEquipped()
+    local equipped, equippedId = getEquippedRod()
+
+    -- Don't re-equip an already equipped usable rod.
+    if equipped then
+        rodLabel.Text = "Rod: Equipped ItemId " .. equippedId
+        return true
+    end
+
+    local rod, err = findUsableRod()
+    if not rod then return false, err end
+
+    setStatus("Equipping rod " .. rod.id)
+
+    local ok = pcall(function()
+        Events.Equip:FireServer(rod.guid)
+    end)
+
+    if not ok then
+        return false, "Equip remote failed"
+    end
+
+    currentRodGuid = rod.guid
+
+    -- Confirm the Tool actually appeared.
+    local deadline = os.clock() + 3
+    while os.clock() < deadline and running and not destroyed do
+        local tool, id = getEquippedRod()
+
+        if tool then
+            rodLabel.Text = "Rod: Equipped ItemId " .. id
+            return true
+        end
+
+        task.wait(0.1)
+    end
+
+    failedRodGuids[rod.guid] = true
+    return false, "Rod equip not confirmed"
+end
+
+-- Water detection:
+-- Raycasts in front of the player at different distances.
+-- Uses Terrain water or parts whose names/material suggest water.
+
+local function isWaterPart(part)
+    if not part then return false end
+
+    if part == workspace.Terrain then
+        return true
+    end
+
+    local name = part.Name:lower()
+
+    if name:find("water") or name:find("lake")
+        or name:find("pond") or name:find("river") then
+        return true
+    end
+
+    if part:IsA("BasePart") then
+        if part.Material == Enum.Material.Water then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function findNearbyWater()
+    local character, root = getCharacter()
+    if not root then return nil end
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {character}
+    params.IgnoreWater = false
+
+    local origin = root.Position
+    local forward = root.CFrame.LookVector
+    local right = root.CFrame.RightVector
+
+    local distances = {8, 14, 22, 32, 45, 60}
+    local offsets = {0, -5, 5, -12, 12}
+
+    for _, distance in ipairs(distances) do
+        for _, side in ipairs(offsets) do
+            local point = origin
+                + forward * distance
+                + right * side
+
+            local rayOrigin = point + Vector3.new(0, 35, 0)
+            local rayDirection = Vector3.new(0, -90, 0)
+
+            local result = workspace:Raycast(
+                rayOrigin,
+                rayDirection,
+                params
+            )
+
+            if result and isWaterPart(result.Instance) then
+                return result.Instance, result.Position
+            end
+        end
+    end
+
+    return nil
+end
+
+local function cancelCurrent()
+    if Events.Cancel then
+        pcall(function()
+            Events.Cancel:FireServer()
+        end)
+    end
+end
+
+local function stopFishing(cancel)
+    running = false
+    session += 1
+    busy = false
+    activeCastId = nil
+
+    if cancel then cancelCurrent() end
+
+    setPhase("idle")
+    updateToggle()
+end
+
+-- Fishing events
+
+if Events.State and Events.State:IsA("RemoteEvent") then
+    table.insert(connections,
+        Events.State.OnClientEvent:Connect(function(state, data)
+            if destroyed or not running then return end
+
+            data = type(data) == "table" and data or {}
+
+            if state == "cast" then
+                if phase ~= "casting" then return end
+
+                activeCastId = data.castId
+                setPhase("waiting")
+                setStatus("Cast accepted")
+
+            elseif state == "reel" then
+                if phase ~= "waiting" then return end
+
+                if activeCastId ~= nil and data.castId ~= activeCastId then
+                    return
+                end
+
+                setPhase("reeling")
+                setStatus("Reeling: " .. tostring(data.itemName or "?"))
+
+                local ok = pcall(function()
+                    Events.Result:FireServer("caught")
+                end)
+
+                if ok then
+                    setPhase("confirming")
+                else
+                    failures += 1
+                    updateStats()
+                    stopFishing(true)
+                    setStatus("Result request failed")
+                end
+
+            elseif state == "done" then
+                if phase ~= "confirming"
+                    and phase ~= "reeling"
+                    and phase ~= "waiting" then
+                    return
+                end
+
+                if activeCastId ~= nil and data.castId ~= nil
+                    and data.castId ~= activeCastId then
+                    return
+                end
+
+                if data.reason == "caught" then
+                    catches += 1
+                    setStatus("Caught: " .. tostring(data.itemName or "?"))
+                else
+                    failures += 1
+                    setStatus("Ended: " .. tostring(data.reason or "?"))
+                end
+
+                updateStats()
+                activeCastId = nil
+                busy = false
+                setPhase("cooldown")
+            end
+        end)
+    )
+end
+
+-- Main worker: only one fishing session at a time.
+
+task.spawn(function()
+    while not destroyed do
+        if not running then
+            task.wait(0.15)
+            continue
+        end
+
+        if phase == "idle" and not busy then
+            busy = true
+            local token = session
+            setPhase("equipping")
+
+            local ok, err = ensureRodEquipped()
+
+            if destroyed or not running or token ~= session then
+                busy = false
+                continue
+            end
+
+            if not ok then
+                stopFishing(false)
+                setStatus(err or "No usable rod")
+                continue
+            end
+
+            local water, hitPosition = findNearbyWater()
+
+            if not water then
+                busy = false
+                setPhase("searching")
+                setStatus("No nearby water detected")
+                waterLabel.Text = "Water: Walk closer and face the water"
+                continue
+            end
+
+            waterLabel.Text = "Water: " .. water.Name
+            setPhase("casting")
+            setStatus("Casting...")
+
+            casts += 1
+            updateStats()
+
+            local success = pcall(function()
+                Events.Cast:FireServer(water, hitPosition)
+            end)
+
+            if not success then
+                failures += 1
+                updateStats()
+                stopFishing(true)
+                setStatus("Cast failed")
+            end
+
+        elseif phase == "searching" then
+            if os.clock() - phaseStarted >= 1 then
+                setPhase("idle")
+            end
+
+        elseif phase == "cooldown" then
+            if os.clock() - phaseStarted >= 1.5 then
+                busy = false
+                setPhase("idle")
+            end
+
+        elseif phase == "casting" then
+            if os.clock() - phaseStarted > 8 then
+                failures += 1
+                updateStats()
+                stopFishing(true)
+                setStatus("Cast timeout")
+            end
+
+        elseif phase == "waiting" then
+            if os.clock() - phaseStarted > 35 then
+                failures += 1
+                updateStats()
+                stopFishing(true)
+                setStatus("Bite timeout")
+            end
+
+        elseif phase == "confirming" then
+            if os.clock() - phaseStarted > 12 then
+                failures += 1
+                updateStats()
+                stopFishing(true)
+                setStatus("Catch confirmation timeout")
+            end
+        end
+
+        task.wait(0.1)
+    end
+end)
+
+learn.MouseButton1Click:Connect(function()
+    if running then
+        setStatus("Turn fishing OFF before learning")
+        return
+    end
+
+    local character = player.Character
+    local tool = character and character:FindFirstChildOfClass("Tool")
+
+    if not tool then
+        setStatus("Equip a fishing rod first")
+        return
+    end
+
+    local id = tonumber(
+        tool:GetAttribute("ItemId")
+        or tool:GetAttribute("ItemID")
+        or tool:GetAttribute("itemId")
+    )
+
+    if not id then
+        setStatus("Tool has no ItemId attribute")
+        return
+    end
+
+    knownRodIds[id] = true
+    setStatus("Learned fishing rod ItemId: " .. id)
+    info.Text = "Known rod IDs include: " .. id
+end)
+
+toggle.MouseButton1Click:Connect(function()
+    if running then
+        stopFishing(true)
+        setStatus("Stopped")
+        return
+    end
+
+    local types = {
+        Cast = "RemoteEvent",
+        Result = "RemoteEvent",
+        Cancel = "RemoteEvent",
+        State = "RemoteEvent",
+        Inventory = "RemoteFunction",
+        Equip = "RemoteEvent"
+    }
+
+    for name, class in pairs(types) do
+        if not Events[name] or not Events[name]:IsA(class) then
+            setStatus("Missing remote: " .. name)
+            return
+        end
+    end
+
+    running = true
+    session += 1
+    busy = false
+    activeCastId = nil
+    currentRodGuid = nil
+    failedRodGuids = {}
+
+    setPhase("idle")
+    updateToggle()
+    setStatus("Searching for water...")
+end)
+
+local function cleanup()
+    if destroyed then return end
+
+    stopFishing(true)
+    destroyed = true
+
+    for _, connection in ipairs(connections) do
+        connection:Disconnect()
+    end
+
+    gui:Destroy()
+
+    if env.SH_FishingV5Cleanup == cleanup then
+        env.SH_FishingV5Cleanup = nil
+    end
+end
+
+close.MouseButton1Click:Connect(cleanup)
+env.SH_FishingV5Cleanup = cleanup
+
+setStatus("Ready")
+print("[Auto Fishing V5] Launched")
