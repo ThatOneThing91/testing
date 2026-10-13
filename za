@@ -1,0 +1,93 @@
+
+--------------------------------------------------
+-- V20 INPUT CONTROLLER
+-- VirtualInputManager compatibility test
+--------------------------------------------------
+
+local VirtualInputManager = game:GetService(
+    "VirtualInputManager"
+)
+
+local inputAvailable = true
+local inputError = nil
+
+local function inputPosition()
+    local camera = workspace.CurrentCamera
+
+    if not camera then
+        return 0, 0
+    end
+
+    local viewport = camera.ViewportSize
+
+    return math.floor(viewport.X * 0.5),
+        math.floor(viewport.Y * 0.5)
+end
+
+local function sendMouseInput(pressed)
+    local x, y = inputPosition()
+
+    local ok, err = pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(
+            x,
+            y,
+            0,
+            pressed,
+            game,
+            0
+        )
+    end)
+
+    if not ok then
+        inputError = tostring(err)
+        inputAvailable = false
+        warn("[Fishing V20] Input error:", inputError)
+    end
+
+    return ok
+end
+
+local function releaseMouse()
+    if not mouseHeld then
+        return
+    end
+
+    mouseHeld = false
+    sendMouseInput(false)
+end
+
+local function holdMouse()
+    if mouseHeld then
+        return true
+    end
+
+    if not inputAvailable then
+        return false
+    end
+
+    if sendMouseInput(true) then
+        mouseHeld = true
+        return true
+    end
+
+    return false
+end
+
+local function setMouseState(shouldHold, now)
+    if shouldHold == mouseHeld then
+        return
+    end
+
+    if now - lastInputChange < MIN_INPUT_SWITCH then
+        return
+    end
+
+    if shouldHold then
+        if holdMouse() then
+            lastInputChange = now
+        end
+    else
+        releaseMouse()
+        lastInputChange = now
+    end
+end
