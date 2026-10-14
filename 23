@@ -1,0 +1,863 @@
+-- CHEESE TYCOON HUB
+-- P = Collect Cash | Comma = Hide / Show
+if _G.CheeseHubCleanup then pcall(_G.CheeseHubCleanup) end
+
+local Players = game:GetService('Players')
+local RS = game:GetService('ReplicatedStorage')
+local UIS = game:GetService('UserInputService')
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild('PlayerGui')
+local pizzaFolder = RS:WaitForChild('Features'):WaitForChild('PizzaMaking')
+local pizzaRemote = pizzaFolder:WaitForChild('Remote')
+local pizzaConfig = {}
+pcall(function() pizzaConfig = require(pizzaFolder:WaitForChild('Config')) end)
+
+local alive = true
+local autoBuy, autoPizza, autoCrates, autoObby, autoHill = false, false, false, false, false
+local buyToken, pizzaToken, crateToken, obbyToken, hillToken = 0, 0, 0, 0, 0
+local connections, centered = {}, {}
+local busy, cachedCash = false, nil
+local function bind(signal, fn)
+    local connection = signal:Connect(fn)
+    table.insert(connections, connection)
+    return connection
+end
+local function getRoot()
+    local char = player.Character
+    return char and char:FindFirstChild('HumanoidRootPart')
+end
+local function getPlot()
+    local tycoon = player:FindFirstChild('Tycoon')
+    if not tycoon or not tycoon:IsA('ObjectValue') then return nil, nil end
+    return tycoon.Value, tycoon:GetAttribute('Slot')
+end
+local function getObjects()
+    local plot, slot = getPlot()
+    if not plot or not slot then return nil end
+    local side = plot:FindFirstChild('Player' .. tostring(slot))
+    return side and side:FindFirstChild('Objects')
+end
+local function teleportTo(part)
+    local root = getRoot()
+    if not root or not part or not part:IsA('BasePart') then return false end
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+    root.CFrame = CFrame.new(part.Position + Vector3.new(0, part.Size.Y / 2 + 3, 0))
+    return true
+end
+local function restore(root, cf)
+    if root and root.Parent and cf then
+        root.CFrame = cf
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end
+end
+local function firePrompt(prompt)
+    if type(fireproximityprompt) ~= 'function' then return false end
+    return pcall(fireproximityprompt, prompt)
+end
+
+-- CASH
+local function collectCash()
+    if not alive or busy then return end
+    busy = true
+    local plot, slot = getPlot()
+    local side = plot and slot and plot:FindFirstChild('Player' .. tostring(slot))
+    local essential = side and side:FindFirstChild('Essential')
+    local atm = essential and essential:FindFirstChild('ATM')
+    local touch = atm and atm:FindFirstChild('Touch')
+    local root = getRoot()
+    local old = root and root.CFrame
+    if touch and touch:IsA('BasePart') then
+        teleportTo(touch)
+        task.wait(0.5)
+        restore(root, old)
+    end
+    busy = false
+end
+
+-- AUTO BUY
+local function parseMoney(value)
+    if type(value) == 'number' then return value end
+    if type(value) ~= 'string' then return nil end
+    local clean = value:gsub(',', ''):gsub('%$', '')
+    local number, suffix = clean:match('([%d%.]+)%s*([KkMmBbTt]?)')
+    number = tonumber(number)
+    if not number then return nil end
+    local scales = {K=1e3, M=1e6, B=1e9, T=1e12}
+    return number * (scales[suffix:upper()] or 1)
+end
+local function getCash()
+    local stats = player:FindFirstChild('leaderstats')
+    if stats then
+        for _, name in ipairs({'Cash','Money'}) do
+            local value = stats:FindFirstChild(name)
+            if value and (value:IsA('NumberValue') or value:IsA('IntValue')) then return value.Value end
+        end
+    end
+    for _, name in ipairs({'Cash','Money'}) do
+        local value = player:GetAttribute(name)
+        if type(value) == 'number' then return value end
+    end
+    return cachedCash
+end
+local function excludedButton(button)
+    if button.Name:lower():sub(1, 9) == 'teammate_' then return true end
+    if button:GetAttribute('IsTeammate') == true or button:GetAttribute('CanPurchase') == false then return true end
+    local function excluded(value)
+        local s = tostring(value):lower():gsub('[^%w]', '')
+        return s:find('2xcash',1,true) or s:find('doublecash',1,true)
+            or s:find('cashmultiplier',1,true) or s:find('2timescash',1,true)
+    end
+    if excluded(button.Name) then return true end
+    for _, obj in ipairs(button:GetDescendants()) do
+        if (obj:IsA('TextLabel') or obj:IsA('TextButton')) and excluded(obj.Text) then return true end
+    end
+    return false
+end
+local function buttonPrice(button)
+    local price = parseMoney(button:GetAttribute('Price'))
+    if price then return price end
+    for _, obj in ipairs(button:GetDescendants()) do
+        if obj:IsA('TextLabel') then
+            price = parseMoney(obj.Text)
+            if price then return price end
+        end
+    end
+    return nil
+end
+local function buttonPart(button)
+    local base = button:FindFirstChild('Base')
+    if base and base:IsA('BasePart') then return base end
+    if button:IsA('BasePart') then return button end
+    return button:FindFirstChildWhichIsA('BasePart', true)
+end
+local function runBuy(token)
+    local failed, lastCash = {}, nil
+    while alive and autoBuy and token == buyToken do
+        if busy then task.wait(0.15) continue end
+        local cash = getCash()
+        if cash ~= lastCash then failed = {} lastCash = cash end
+        local folder = workspace:FindFirstChild('__TycoonButtons_' .. tostring(player.UserId))
+        local chosen, part, cheapest = nil, nil, math.huge
+        if folder and cash then
+            for _, button in ipairs(folder:GetChildren()) do
+                if not failed[button] and not excludedButton(button) then
+                    local price, candidate = buttonPrice(button), buttonPart(button)
+                    if price and price <= cash and price < cheapest and candidate then
+                        chosen, part, cheapest = button, candidate, price
+                    end
+                end
+            end
+        end
+        if not chosen then task.wait(0.5) continue end
+        busy = true
+        local root = getRoot()
+        local old = root and root.CFrame
+        teleportTo(part)
+        local deadline, purchased = os.clock() + 2, false
+        while alive and autoBuy and token == buyToken and os.clock() < deadline do
+            if not chosen.Parent or chosen.Parent ~= folder then purchased = true break end
+            task.wait(0.05)
+        end
+        restore(root, old)
+        busy = false
+        if not purchased then failed[chosen] = true end
+        task.wait(0.12)
+    end
+end
+
+-- PIZZA
+local function pizzaGui()
+    local gui = playerGui:FindFirstChild('PizzaMaking')
+    return gui and gui:IsA('ScreenGui') and gui or nil
+end
+local function pizzaVisible()
+    local gui = pizzaGui()
+    return gui ~= nil and gui.Enabled
+end
+local function centerPizza()
+    local gui = pizzaGui()
+    if not gui or not gui.Enabled then return end
+    local root = gui:FindFirstChild('Root')
+    if not root or not root:IsA('GuiObject') then return end
+    if not centered[root] then centered[root] = {position=root.Position, anchor=root.AnchorPoint} end
+    root.AnchorPoint = Vector2.new(0.5, 0.5)
+    root.Position = UDim2.fromScale(0.5, 0.5)
+end
+local function restorePizzaGui()
+    for frame, data in pairs(centered) do
+        if frame and frame.Parent then
+            pcall(function() frame.AnchorPoint = data.anchor frame.Position = data.position end)
+        end
+        centered[frame] = nil
+    end
+end
+-- No automatic Exit calls. Follow server-issued session IDs instead.
+local pizza = {
+    session=nil, phase=nil, progress=0, remaining={}, state='idle', status='Idle',
+    lastPrompt=0, promptAttempts=0, promptBusy=false, lastExit=0, exitAttempts=0,
+    closedAt=0, paidAt=0, finishAt=0, doughStep=0, completedAt=0,
+    lastTopping=0, count=0, closeConfirmed=false, exitSession=nil, nextSession=nil
+}
+local nextPhase = {Dough='Sauce', Sauce='Cheese', Cheese='Toppings'}
+local phaseRank = {Dough=1, Sauce=2, Cheese=3, Toppings=4}
+local function resetPizza()
+    pizza.session=nil pizza.phase=nil pizza.progress=0 pizza.remaining={}
+    pizza.state='idle' pizza.status='Waiting for station'
+    pizza.lastPrompt=0 pizza.promptAttempts=0 pizza.promptBusy=false
+    pizza.lastExit=0 pizza.exitAttempts=0 pizza.closedAt=0
+    pizza.paidAt=0 pizza.finishAt=0 pizza.doughStep=0
+    pizza.completedAt=0 pizza.lastTopping=0 pizza.closeConfirmed=false
+    pizza.exitSession=nil pizza.nextSession=nil
+end
+local function beginPhase(phase, force)
+    if pizza.state ~= 'making' then return end
+    local old, new = phaseRank[pizza.phase] or 0, phaseRank[phase] or 0
+    if new == 0 or (not force and new <= old) then return end
+    pizza.phase=phase pizza.progress=0 pizza.completedAt=0 pizza.status=phase
+    if phase == 'Dough' then pizza.doughStep=0 end
+    if phase == 'Toppings' then pizza.lastTopping=0 end
+end
+local function stationPrompt()
+    local objects = getObjects()
+    if not objects then return nil end
+    local best, highest = nil, -1
+    for _, station in ipairs(objects:GetChildren()) do
+        if station.Name:match('^Pizza Prep Station %d+$') then
+            local number = tonumber(station.Name:match('(%d+)$')) or 0
+            local start = station:FindFirstChild('StartGame', true)
+            local prompt = start and start:FindFirstChildWhichIsA('ProximityPrompt', true)
+            if prompt and prompt.Enabled and number > highest then best, highest = prompt, number end
+        end
+    end
+    return best
+end
+local function promptPart(prompt)
+    local parent = prompt.Parent
+    if parent:IsA('BasePart') then return parent end
+    if parent:IsA('Attachment') and parent.Parent:IsA('BasePart') then return parent.Parent end
+    local model = prompt:FindFirstAncestorOfClass('Model')
+    if model then return model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart', true) end
+    return nil
+end
+local function tryPizzaPrompt(token)
+    if pizza.state ~= 'opening' or pizza.promptBusy or busy or pizza.session or pizzaVisible() then return end
+    local now = os.clock()
+    if now - pizza.lastPrompt < 0.4 then return end
+    pizza.promptBusy=true pizza.lastPrompt=now pizza.promptAttempts+=1
+    pizza.status='Starting pizza - attempt ' .. tostring(pizza.promptAttempts)
+    local prompt = stationPrompt()
+    if not prompt then pizza.status='Waiting for station prompt' pizza.promptBusy=false return end
+    busy=true
+    local part = promptPart(prompt)
+    if part then teleportTo(part) end
+    task.wait(0.08)
+    if alive and autoPizza and token == pizzaToken and pizza.state == 'opening' and not pizza.session then
+        firePrompt(prompt)
+    end
+    busy=false pizza.promptBusy=false
+end
+local function recipeToppings()
+    local result = {}
+    local gui = pizzaGui()
+    local root = gui and gui:FindFirstChild('Root')
+    local recipe = root and root:FindFirstChild('Recipe')
+    local order = recipe and recipe:FindFirstChild('Order')
+    local name = (order and order:IsA('TextLabel')) and order.Text:lower() or ''
+    for _, entry in pairs(pizzaConfig.Recipes or {}) do
+        if type(entry) == 'table' then
+            local recipeName = tostring(entry.Name or ''):lower()
+            if recipeName ~= '' and name:find(recipeName, 1, true) then
+                for topping, count in pairs(entry.Toppings or {}) do result[topping] = count end
+                break
+            end
+        end
+    end
+    return result
+end
+local function sendPizza(action, point, topping)
+    if not alive or not autoPizza or pizza.state ~= 'making' or not pizza.session then return end
+    pizzaRemote:FireServer(pizza.session, action, point, topping)
+end
+local function markPizzaFinished()
+    if pizza.finishAt > 0 then return end
+    pizza.finishAt=os.clock()
+    pizza.state='awaitingNext'
+    pizza.phase='Finished'
+    pizza.progress=1
+    pizza.status='Paid - waiting for next session ID'
+end
+bind(pizzaRemote.OnClientEvent, function(action, session, a, b, c)
+    if not alive or not autoPizza then return end
+    if action == 'Begin' then
+        if type(session) ~= 'string' or session == '' then return end
+        if session == pizza.session then return end
+        -- The server has issued a new session: start it without any Exit call.
+        -- Accept it after payment, after closure, or while opening.
+        if pizza.state ~= 'opening' and pizza.state ~= 'awaitingNext'
+            and pizza.state ~= 'waitingClose' and pizza.state ~= 'idle' then return end
+        pizza.session=session pizza.state='making' pizza.phase=nil pizza.progress=0
+        pizza.remaining={} pizza.doughStep=0 pizza.completedAt=0 pizza.lastTopping=0
+        pizza.promptBusy=false pizza.promptAttempts=0 pizza.finishAt=0 pizza.paidAt=0
+        pizza.closeConfirmed=false pizza.exitSession=nil pizza.nextSession=nil
+        beginPhase('Dough', true)
+        centerPizza()
+        return
+    end
+    if action == 'Close' then
+        if session ~= pizza.session then return end
+        pizza.closeConfirmed=true
+        pizza.state='waitingClose'
+        pizza.closedAt=os.clock()
+        pizza.status='Session closed - waiting for next pizza'
+        return
+    end
+    if action == 'Paid' then
+        if pizza.state ~= 'making' then return end
+        -- Do not replace the current session ID based on an unrelated payout.
+        if session ~= pizza.session then return end
+        if pizza.paidAt == 0 then pizza.count+=1 end
+        pizza.paidAt=os.clock()
+        markPizzaFinished()
+        return
+    end
+    if session ~= pizza.session then return end
+    if action == 'Round' then return end
+    if action == 'End' then
+        -- End alone does not confirm payout. Do not prematurely exit.
+        if pizza.state == 'making' then
+            pizza.status='Waiting for payout confirmation'
+        end
+        return
+    end
+    if action == 'Cancel' then
+        if pizza.state == 'making' or pizza.state == 'awaitingNext' then
+            pizza.state='waitingClose'
+            pizza.status='Session cancelled'
+        end
+        return
+    end
+    if pizza.state ~= 'making' then return end
+    if action == 'Phase' then
+        if type(a) == 'string' then
+            beginPhase(a)
+            if a == 'Toppings' then pizza.remaining=recipeToppings() end
+        end
+    elseif action == 'Progress' then
+        if type(a) == 'string' and type(b) == 'number' then
+            beginPhase(a)
+            if pizza.phase == a then
+                pizza.progress=math.max(pizza.progress, math.clamp(b,0,1))
+                if pizza.progress >= 1 and pizza.completedAt == 0 then pizza.completedAt=os.clock() end
+            end
+        end
+    elseif action == 'PourComplete' then
+        if a == pizza.phase then
+            pizza.progress=1
+            if pizza.completedAt == 0 then pizza.completedAt=os.clock() end
+        end
+    elseif action == 'Topping' then
+        if type(a) == 'string' and type(c) == 'number' then
+            pizza.remaining[a]=c
+        end
+    end
+end)
+local function runPizza(token)
+    while alive and autoPizza and token == pizzaToken do
+        local state, now = pizza.state, os.clock()
+        if state == 'idle' then
+            if not pizzaVisible() then
+                pizza.state='opening' pizza.status='Preparing new pizza'
+                pizza.promptAttempts=0 pizza.lastPrompt=now-0.4
+            end
+            task.wait(0.04)
+        elseif state == 'opening' then
+            if pizza.session then pizza.state='making'
+            elseif not pizzaVisible() then tryPizzaPrompt(token) end
+            task.wait(0.04)
+        elseif state == 'awaitingNext' or state == 'waitingClose' then
+            -- Do not send Exit. Wait for a new Begin with a different ID.
+            -- If the game closes the interface without issuing a new Begin,
+            -- reopen via the existing station-prompt logic.
+            if not pizzaVisible() then
+                if pizza.closedAt == 0 then pizza.closedAt=now end
+                if now-pizza.closedAt >= 0.2 then
+                    restorePizzaGui()
+                    resetPizza()
+                    pizza.status='Interface closed - opening next pizza'
+                end
+            else
+                pizza.closedAt=0
+                pizza.status = state == 'awaitingNext'
+                    and 'Paid - waiting for next session ID'
+                    or 'Waiting for next session'
+            end
+            task.wait(0.04)
+        elseif state == 'making' then
+            centerPizza()
+            local phase = pizza.phase
+            if nextPhase[phase] and pizza.progress >= 1 and pizza.completedAt > 0
+                and now-pizza.completedAt >= 0.1 then
+                local target = nextPhase[phase]
+                beginPhase(target)
+                if target == 'Toppings' then pizza.remaining=recipeToppings() end
+                phase=target
+            end
+            if phase == 'Dough' then
+                if pizza.progress < 1 then
+                    pizza.doughStep+=1
+                    local angle=pizza.doughStep*0.28
+                    sendPizza('Knead', Vector2.new(math.cos(angle)*0.24, math.sin(angle)*0.24), nil)
+                end
+                task.wait(0.055)
+            elseif phase == 'Sauce' then
+                if pizza.progress < 1 then sendPizza('Pour', Vector2.new(-0.08625,-0.2192), nil) end
+                task.wait(0.035)
+            elseif phase == 'Cheese' then
+                if pizza.progress < 1 then sendPizza('Pour', Vector2.new(-0.08625,-0.2192), nil) end
+                task.wait(0.055)
+            elseif phase == 'Toppings' then
+                local chosen
+                for _, name in ipairs({'Pepperoni','Mushroom','Olive'}) do
+                    if (pizza.remaining[name] or 0) > 0 then chosen=name break end
+                end
+                if chosen and now-pizza.lastTopping >= 0.12 then
+                    sendPizza('Topping', Vector2.new(0.2,0.17), chosen)
+                    pizza.lastTopping=now
+                end
+                task.wait(0.04)
+            else task.wait(0.06) end
+        else task.wait(0.08) end
+    end
+end
+
+-- CRATES
+local function findCrates()
+    local result={}
+    for _, crate in ipairs(workspace:GetChildren()) do
+        if crate.Name == 'Crate' then
+            local main=crate:FindFirstChild('Main')
+            local prompt=main and main:FindFirstChild('Prompt')
+            if main and main:IsA('BasePart') and prompt and prompt:IsA('ProximityPrompt') and prompt.Enabled then
+                table.insert(result,{crate=crate,main=main,prompt=prompt})
+            end
+        end
+    end
+    return result
+end
+local function crateGone(entry)
+    return not entry.crate.Parent or not entry.prompt.Parent or not entry.prompt.Enabled
+end
+local function runCrates(token)
+    while alive and autoCrates and token == crateToken do
+        if busy then task.wait(0.15) continue end
+        for _, entry in ipairs(findCrates()) do
+            if not alive or not autoCrates or token ~= crateToken then break end
+            if not crateGone(entry) then
+                busy=true
+                local root=getRoot()
+                local old=root and root.CFrame
+                while alive and autoCrates and token == crateToken and not crateGone(entry) do
+                    teleportTo(entry.main)
+                    task.wait(0.25)
+                    firePrompt(entry.prompt)
+                    local deadline=os.clock()+1.5
+                    while os.clock() < deadline and not crateGone(entry) and alive and autoCrates do task.wait(0.1) end
+                    if crateGone(entry) then break end
+                    task.wait(0.35)
+                end
+                restore(root,old)
+                busy=false
+            end
+        end
+        task.wait(0.5)
+    end
+end
+
+-- OBBY: teleport directly to the cave entrance, wait for game teleport, then finish
+local OBBY_COOLDOWN=30 -- conservative fallback; game-specific cooldown is not known
+local OBBY_ENTRY_TIMEOUT=6
+local OBBY_RETRY_INTERVAL=3
+local OBBY_MIN_ENTRY_MOVEMENT=35
+local obbyStatus='Idle'
+local obbyCompleted=0
+local obbyNextAttempt=0
+local function obbyActive(token) return alive and autoObby and token == obbyToken end
+local function obbyPart(object)
+    if not object then return nil end
+    if object:IsA('BasePart') then return object end
+    if object:IsA('Model') then return object.PrimaryPart or object:FindFirstChildWhichIsA('BasePart',true) end
+    return object:FindFirstChildWhichIsA('BasePart',true)
+end
+local function getObby()
+    local map=workspace:FindFirstChild('Map')
+    return map and map:FindFirstChild('Obby')
+end
+local function getObbyEntrance()
+    local obby=getObby()
+    -- Enter the cave itself, not its child "Obby Teleport" or TouchInterest.
+    return obby and obby:FindFirstChild('cave')
+end
+local function getObbyEnd()
+    local obby=getObby()
+    return obby and obbyPart(obby:FindFirstChild('End'))
+end
+local function readCooldown()
+    local obby=getObby()
+    if not obby then return nil end
+    -- Only read explicitly named time-remaining attributes/values, if present.
+    for _, object in ipairs({obby, obby:FindFirstChild('cave'), obby:FindFirstChild('Cave')}) do
+        if object then
+            for _, name in ipairs({'CooldownRemaining','TimeRemaining','ObbyCooldownRemaining'}) do
+                local v=object:GetAttribute(name)
+                if type(v) ~= 'number' then
+                    local child=object:FindFirstChild(name)
+                    if child and child:IsA('NumberValue') then v=child.Value end
+                end
+                if type(v) == 'number' and v > 0 and v < 3600 then return v end
+            end
+        end
+    end
+    return nil
+end
+local function cavePosition(cave)
+    if not cave then return nil end
+    if cave:IsA('BasePart') then return cave.Position end
+    -- A Model's pivot can be far away from its actual entrance. Prefer
+    -- its PrimaryPart or a physical part belonging directly to the cave.
+    if cave:IsA('Model') then
+        if cave.PrimaryPart then return cave.PrimaryPart.Position end
+        for _, child in ipairs(cave:GetChildren()) do
+            if child:IsA('BasePart') then return child.Position end
+        end
+    end
+    -- Fallback only if the cave has no direct physical parts.
+    local part=obbyPart(cave)
+    return part and part.Position or nil
+end
+local function enterObbyCave(cave)
+    local root=getRoot()
+    local pos=cavePosition(cave)
+    if not root or not pos then return false end
+    root.AssemblyLinearVelocity=Vector3.zero
+    root.AssemblyAngularVelocity=Vector3.zero
+    root.CFrame=CFrame.new(pos + Vector3.new(0, 2, 0))
+    return true
+end
+local function waitForObbyEntry(token, entrance, character, root)
+    local deadline=os.clock()+OBBY_ENTRY_TIMEOUT
+    while obbyActive(token) and os.clock() < deadline do
+        if player.Character ~= character or getRoot() ~= root then return false end
+        if (root.Position-cavePosition(entrance)).Magnitude >= OBBY_MIN_ENTRY_MOVEMENT then
+            task.wait(0.2)
+            if obbyActive(token) and getRoot() == root
+                and (root.Position-cavePosition(entrance)).Magnitude >= OBBY_MIN_ENTRY_MOVEMENT then
+                return true
+            end
+        end
+        task.wait(0.05)
+    end
+    return false
+end
+local function runObby(token)
+    while obbyActive(token) do
+        local now=os.clock()
+        local remaining=readCooldown()
+        if remaining and remaining > 0 then
+            obbyNextAttempt=math.max(obbyNextAttempt,now+remaining)
+        end
+        if now < obbyNextAttempt then
+            obbyStatus='Cooldown: ' .. tostring(math.ceil(obbyNextAttempt-now)) .. 's'
+            task.wait(0.2)
+            continue
+        end
+        if busy then obbyStatus='Waiting for other action' task.wait(0.15) continue end
+        local entrance, finish=getObbyEntrance(),getObbyEnd()
+        if not entrance then obbyStatus='Waiting for cave' task.wait(1) continue end
+        if not finish then obbyStatus='Waiting for obby End' task.wait(1) continue end
+        local root, character=getRoot(),player.Character
+        if not root or not character then obbyStatus='Waiting for character' task.wait(0.5) continue end
+        busy=true
+        obbyStatus='Teleporting to cave'
+        local entered=enterObbyCave(entrance)
+        local started=false
+        if entered and obbyActive(token) then
+            obbyStatus='Checking obby entry'
+            started=waitForObbyEntry(token,entrance,character,root)
+        end
+        if not obbyActive(token) then busy=false break end
+        if started then
+            obbyStatus='Entry confirmed - going to End'
+            if teleportTo(finish) then
+                obbyCompleted+=1
+                obbyStatus='Finish reached - cooldown'
+                task.wait(0.7)
+                obbyNextAttempt=os.clock()+OBBY_COOLDOWN
+            else obbyStatus='Could not reach End' end
+        else
+            obbyStatus='Entry not activated - retrying'
+            -- An unsuccessful touch may still have consumed the game's entry cooldown.
+            local cooldown=readCooldown()
+            if cooldown then obbyNextAttempt=os.clock()+cooldown end
+        end
+        busy=false
+        if not started then
+            local deadline=os.clock()+OBBY_RETRY_INTERVAL
+            while obbyActive(token) and os.clock() < deadline do task.wait(0.1) end
+        end
+    end
+end
+
+-- KING OF THE HILL: one-click capture; return when progress reaches 100.
+local hillStatus = 'Idle'
+local hillProgress = nil
+local hillFinished = false
+local hillSavedRoot, hillSavedCFrame, hillSavedCharacter = nil, nil, nil
+local hillOwnsBusy = false
+local HILL_CHECK_INTERVAL = 0.2
+
+local function getHillHitbox()
+    local map = workspace:FindFirstChild('Map')
+    local hill = map and map:FindFirstChild('Hill')
+    local hitbox = hill and hill:FindFirstChild('Hitbox')
+    return hitbox and hitbox:IsA('BasePart') and hitbox or nil
+end
+local function hillActive(token)
+    return alive and autoHill and token == hillToken
+end
+local function teleportToHill()
+    local hitbox, root = getHillHitbox(), getRoot()
+    if not hitbox or not root then return false end
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+    root.CFrame = CFrame.new(hitbox.Position + Vector3.new(0, hitbox.Size.Y / 2 + 2.5, 0))
+    return true
+end
+local function returnFromHill()
+    if hillSavedRoot and hillSavedCFrame and player.Character == hillSavedCharacter
+        and getRoot() == hillSavedRoot then
+        restore(hillSavedRoot, hillSavedCFrame)
+    end
+    hillSavedRoot, hillSavedCFrame, hillSavedCharacter = nil, nil, nil
+end
+local remotesFolder = RS:FindFirstChild('Remotes')
+local hillEvent = remotesFolder and remotesFolder:FindFirstChild('Event')
+if hillEvent and hillEvent:IsA('RemoteEvent') then
+    bind(hillEvent.OnClientEvent, function(action, state, amount)
+        if not alive or not autoHill then return end
+        if action == 'HillClaimStatus' and state == 'Progress' and type(amount) == 'number' then
+            hillProgress = amount
+            hillStatus = 'Capturing: ' .. tostring(math.floor(amount)) .. '%'
+            if amount >= 100 then hillFinished = true end
+        end
+        -- Hidden and HillClaimed are deliberately ignored: neither is required.
+    end)
+end
+local function runHill(token)
+    while hillActive(token) and busy do
+        hillStatus = 'Waiting for other action'
+        task.wait(0.15)
+    end
+    if not hillActive(token) then return end
+    local root, hitbox = getRoot(), getHillHitbox()
+    if not root or not hitbox then
+        hillStatus = 'Hill or character unavailable'
+        autoHill = false
+        return
+    end
+    busy = true
+    hillOwnsBusy = true
+    hillSavedRoot, hillSavedCFrame, hillSavedCharacter = root, root.CFrame, player.Character
+    hillProgress, hillFinished = nil, false
+    hillStatus = 'Teleporting to hill'
+    if not teleportToHill() then
+        hillStatus = 'Could not teleport to hill'
+        returnFromHill()
+        if hillOwnsBusy then busy = false; hillOwnsBusy = false end
+        if hillActive(token) then autoHill = false end
+        return
+    end
+    while hillActive(token) and not hillFinished do
+        if player.Character ~= hillSavedCharacter or getRoot() ~= hillSavedRoot then
+            hillStatus = 'Character changed - stopped'
+            break
+        end
+        local current = getHillHitbox()
+        if current then
+            local offset = root.Position - current.Position
+            if Vector3.new(offset.X, 0, offset.Z).Magnitude > 10 then
+                teleportToHill()
+            end
+        end
+        task.wait(HILL_CHECK_INTERVAL)
+    end
+    if token ~= hillToken then return end
+    local completed = hillFinished
+    returnFromHill()
+    if hillOwnsBusy then busy = false; hillOwnsBusy = false end
+    autoHill = false
+    if completed then
+        hillStatus = '100% - returned to start'
+    elseif hillStatus ~= 'Character changed - stopped' then
+        hillStatus = 'Stopped - returned to start'
+    end
+end
+
+-- GUI (Aim Assist button removed)
+local gui=Instance.new('ScreenGui')
+gui.Name='CheeseTycoonHub'
+gui.ResetOnSpawn=false
+gui.DisplayOrder=999999
+gui.ZIndexBehavior=Enum.ZIndexBehavior.Global
+pcall(function() gui.OnTopOfCoreBlur=true end)
+gui.Parent=playerGui
+local frame=Instance.new('Frame')
+frame.Name='Main'
+frame.Size=UDim2.fromOffset(260,402)
+frame.Position=UDim2.new(0.5,-130,0.5,-201)
+frame.BackgroundColor3=Color3.fromRGB(28,30,38)
+frame.BorderSizePixel=0
+frame.Active=true
+frame.Draggable=true
+frame.Parent=gui
+local corner=Instance.new('UICorner')
+corner.CornerRadius=UDim.new(0,9)
+corner.Parent=frame
+local title=Instance.new('TextLabel')
+title.Size=UDim2.new(1,-12,0,35)
+title.Position=UDim2.fromOffset(6,3)
+title.BackgroundTransparency=1
+title.Text='TYCOON HUB'
+title.TextColor3=Color3.new(1,1,1)
+title.Font=Enum.Font.GothamBold
+title.TextSize=17
+title.Parent=frame
+local function makeButton(label,y)
+    local button=Instance.new('TextButton')
+    button.Size=UDim2.new(1,-20,0,40)
+    button.Position=UDim2.fromOffset(10,y)
+    button.BackgroundColor3=Color3.fromRGB(48,51,65)
+    button.TextColor3=Color3.new(1,1,1)
+    button.TextSize=14
+    button.Font=Enum.Font.GothamSemibold
+    button.Text=label
+    button.Parent=frame
+    local round=Instance.new('UICorner')
+    round.CornerRadius=UDim.new(0,7)
+    round.Parent=button
+    return button
+end
+local cashButton=makeButton('Collect Cash [P]',43)
+local buyButton=makeButton('Auto Buy: OFF',89)
+local pizzaButton=makeButton('Auto Make Pizzas: OFF',135)
+local crateButton=makeButton('Auto Collect Crates: OFF',181)
+local obbyButton=makeButton('Auto Obby: OFF',227)
+local hillButton=makeButton('Claim King of the Hill',273)
+local function makeLabel(y,label)
+    local item=Instance.new('TextLabel')
+    item.Size=UDim2.new(1,-16,0,18)
+    item.Position=UDim2.fromOffset(8,y)
+    item.BackgroundTransparency=1
+    item.TextColor3=Color3.fromRGB(190,195,210)
+    item.Font=Enum.Font.Gotham
+    item.TextSize=11
+    item.TextXAlignment=Enum.TextXAlignment.Left
+    item.Text=label
+    item.Parent=frame
+    return item
+end
+local status=makeLabel(319,'Pizza: Idle')
+local obbyLabel=makeLabel(339,'Obby: Idle')
+local hillLabel=makeLabel(359,'Hill: Idle')
+local footer=makeLabel(382,'Comma [,] to hide / show')
+footer.TextColor3=Color3.fromRGB(155,160,180)
+local function refresh()
+    buyButton.Text='Auto Buy: ' .. (autoBuy and 'ON' or 'OFF')
+    pizzaButton.Text='Auto Make Pizzas: ' .. (autoPizza and 'ON' or 'OFF')
+    crateButton.Text='Auto Collect Crates: ' .. (autoCrates and 'ON' or 'OFF')
+    obbyButton.Text='Auto Obby: ' .. (autoObby and 'ON' or 'OFF')
+    hillButton.Text=autoHill and 'Cancel Hill Claim' or 'Claim King of the Hill'
+    local function color(button,on)
+        button.BackgroundColor3=on and Color3.fromRGB(40,135,85) or Color3.fromRGB(48,51,65)
+    end
+    color(buyButton,autoBuy)
+    color(pizzaButton,autoPizza)
+    color(crateButton,autoCrates)
+    color(obbyButton,autoObby)
+    color(hillButton,autoHill)
+    status.Text=autoPizza and ('Pizza: ' .. pizza.status .. ' (' .. math.floor(math.clamp(pizza.progress,0,1)*100) .. '%)') or 'Pizza: Idle'
+    obbyLabel.Text=autoObby and ('Obby: ' .. obbyStatus .. ' | Runs: ' .. tostring(obbyCompleted)) or 'Obby: Idle'
+    hillLabel.Text='Hill: ' .. hillStatus
+end
+bind(cashButton.MouseButton1Click,function() task.spawn(collectCash) end)
+bind(buyButton.MouseButton1Click,function()
+    autoBuy=not autoBuy buyToken+=1
+    if autoBuy then task.spawn(runBuy,buyToken) end
+    refresh()
+end)
+bind(pizzaButton.MouseButton1Click,function()
+    autoPizza=not autoPizza pizzaToken+=1
+    resetPizza()
+    if autoPizza then task.spawn(runPizza,pizzaToken) else restorePizzaGui() end
+    refresh()
+end)
+bind(crateButton.MouseButton1Click,function()
+    autoCrates=not autoCrates crateToken+=1
+    if autoCrates then task.spawn(runCrates,crateToken) end
+    refresh()
+end)
+bind(obbyButton.MouseButton1Click,function()
+    autoObby=not autoObby obbyToken+=1
+    if autoObby then obbyStatus='Starting' task.spawn(runObby,obbyToken) else obbyStatus='Idle' end
+    refresh()
+end)
+bind(hillButton.MouseButton1Click,function()
+    if autoHill then
+        autoHill = false
+        hillToken += 1
+        hillFinished = false
+        returnFromHill()
+        if hillOwnsBusy then busy = false; hillOwnsBusy = false end
+        hillStatus = 'Cancelled - returned to start'
+        refresh()
+        return
+    end
+    autoHill = true
+    hillToken += 1
+    hillStatus = 'Starting'
+    task.spawn(runHill, hillToken)
+    refresh()
+end)
+bind(UIS.InputBegan,function(input,processed)
+    if processed or not alive then return end
+    if input.KeyCode == Enum.KeyCode.P then task.spawn(collectCash)
+    elseif input.KeyCode == Enum.KeyCode.Comma then frame.Visible=not frame.Visible end
+end)
+local tycoonFolder=RS:FindFirstChild('Tycoon')
+local buttonRemote=tycoonFolder and tycoonFolder:FindFirstChild('TycoonButtonEvent')
+if buttonRemote then
+    bind(buttonRemote.OnClientEvent,function(action,data)
+        if type(data) ~= 'table' or (action ~= 'Snapshot' and action ~= 'State') then return end
+        local plot,slot=getPlot()
+        if plot and data.tycoon == plot and data.slot == slot and type(data.cash) == 'number' then
+            cachedCash=data.cash
+        end
+    end)
+end
+task.spawn(function()
+    while alive do refresh() task.wait(0.2) end
+end)
+_G.CheeseHubCleanup=function()
+    alive=false
+    autoBuy=false autoPizza=false autoCrates=false autoObby=false autoHill=false
+    buyToken+=1 pizzaToken+=1 crateToken+=1 obbyToken+=1 hillToken+=1
+    restorePizzaGui()
+    returnFromHill()
+    if hillOwnsBusy then busy = false; hillOwnsBusy = false end
+    for _,connection in ipairs(connections) do pcall(function() connection:Disconnect() end) end
+    table.clear(connections)
+    gui:Destroy()
+    _G.CheeseHubCleanup=nil
+end
+refresh()
