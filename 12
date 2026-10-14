@@ -1,0 +1,119 @@
+-- PIZZA AUTOMATION DIAGNOSTIC
+-- Run before opening the pizza station.
+-- Re-running replaces the previous diagnostic.
+
+if _G.PizzaDiagnosticCleanup then
+    pcall(_G.PizzaDiagnosticCleanup)
+end
+
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local remote = RS:WaitForChild("Features")
+    :WaitForChild("PizzaMaking")
+    :WaitForChild("Remote")
+
+local running = true
+local session = nil
+local connections = {}
+local kneadStep = 0
+
+local function connect(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(connections, connection)
+end
+
+local function getGui()
+    local playerGui = player:FindFirstChild("PlayerGui")
+    return playerGui and playerGui:FindFirstChild("PizzaMaking")
+end
+
+local function getPhase()
+    local gui = getGui()
+
+    if not gui then
+        return "No GUI"
+    end
+
+    return tostring(gui:GetAttribute("Phase"))
+end
+
+local screen = Instance.new("ScreenGui")
+screen.Name = "PizzaDiagnostic"
+screen.ResetOnSpawn = false
+screen.Parent = player:WaitForChild("PlayerGui")
+
+local label = Instance.new("TextLabel")
+label.Size = UDim2.fromOffset(330, 110)
+label.Position = UDim2.fromOffset(20, 100)
+label.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+label.TextColor3 = Color3.new(1, 1, 1)
+label.Font = Enum.Font.Code
+label.TextSize = 13
+label.TextWrapped = true
+label.Parent = screen
+
+local lastEvent = "Waiting for event"
+
+connect(remote.OnClientEvent, function(...)
+    local args = {...}
+    local action = args[1]
+
+    lastEvent = tostring(action)
+
+    print("[PIZZA EVENT]", ...)
+
+    if action == "Begin" and args[2] ~= nil then
+        session = args[2]
+        kneadStep = 0
+        print("[PIZZA] Session captured:", session)
+    end
+end)
+
+task.spawn(function()
+    while running do
+        local gui = getGui()
+        local phase = getPhase()
+
+        label.Text =
+            "PIZZA DIAGNOSTIC\n" ..
+            "GUI: " .. tostring(gui and gui.Enabled) .. "\n" ..
+            "Phase: " .. phase .. "\n" ..
+            "Session: " .. tostring(session) .. "\n" ..
+            "Last event: " .. lastEvent
+
+        if gui and gui.Enabled
+            and phase == "Dough"
+            and session ~= nil then
+
+            kneadStep += 1
+
+            local angle = kneadStep * 0.48
+            local point = Vector2.new(
+                math.cos(angle) * 0.22,
+                math.sin(angle) * 0.22
+            )
+
+            remote:FireServer(
+                session,
+                "Knead",
+                point,
+                nil
+            )
+        end
+
+        task.wait(0.08)
+    end
+end)
+
+_G.PizzaDiagnosticCleanup = function()
+    running = false
+
+    for _, connection in ipairs(connections) do
+        connection:Disconnect()
+    end
+
+    screen:Destroy()
+    _G.PizzaDiagnosticCleanup = nil
+end
