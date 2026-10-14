@@ -1,0 +1,1085 @@
+
+-- TYCOON HUB
+-- Complete script
+-- First-pizza behavior preserved
+-- Next-round identifier handling updated
+--
+-- P = Collect Cash
+-- Comma = Hide / Show
+
+if _G.CheeseHubCleanup then
+    pcall(_G.CheeseHubCleanup)
+end
+
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local UIS = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local pizzaFolder = RS:WaitForChild("Features"):WaitForChild("PizzaMaking")
+local pizzaRemote = pizzaFolder:WaitForChild("Remote")
+local pizzaConfig = require(pizzaFolder:WaitForChild("Config"))
+
+local alive = true
+local autoBuy = false
+local autoPizza = false
+local autoCrates = false
+
+local buyGeneration = 0
+local pizzaGeneration = 0
+local crateGeneration = 0
+
+local connections = {}
+local teleportBusy = false
+local collectingCash = false
+local cachedCash = nil
+
+local pizza = {
+    session = nil,
+    roundId = nil,
+    actionId = nil,
+    phase = nil,
+    progress = 0,
+    round = 0,
+    revision = 0,
+    starting = false,
+    lastStart = 0,
+    lastEvent = 0,
+    remaining = {},
+    status = "Idle",
+    roundStartedAt = 0,
+    progressSeen = false,
+    fallbackUsed = false
+}
+
+local function connect(signal, callback)
+    local c = signal:Connect(callback)
+    table.insert(connections, c)
+    return c
+end
+
+local function getRoot()
+    local character = player.Character
+    return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function getPlot()
+    local tycoon = player:FindFirstChild("Tycoon")
+    if not tycoon or not tycoon:IsA("ObjectValue") then
+        return nil, nil
+    end
+
+    local slot = tycoon:GetAttribute("Slot")
+    if slot ~= 1 and slot ~= 2 then
+        return nil, nil
+    end
+
+    return tycoon.Value, slot
+end
+
+local function getObjects()
+    local plot, slot = getPlot()
+    local side = plot and plot:FindFirstChild("Player" .. slot)
+    return side and side:FindFirstChild("Objects")
+end
+
+local function teleportTo(part)
+    local root = getRoot()
+
+    if not root or not part or not part:IsA("BasePart") then
+        return false
+    end
+
+    local humanoid = root.Parent:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid.Sit = false
+    end
+
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+
+    root.CFrame = CFrame.new(
+        part.Position.X,
+        part.Position.Y + part.Size.Y / 2 + 3,
+        part.Position.Z
+    )
+
+    return true
+end
+
+local function restore(root, cf)
+    if root and root.Parent and cf then
+        root.CFrame = cf
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end
+end
+
+local function firePrompt(prompt)
+    if type(fireproximityprompt) ~= "function" then
+        return false
+    end
+
+    return pcall(function()
+        fireproximityprompt(prompt)
+    end)
+end
+
+-- COLLECT CASH
+
+local function collectCash()
+    if not alive or teleportBusy or collectingCash then
+        return
+    end
+
+    collectingCash = true
+    teleportBusy = true
+
+    local plot, slot = getPlot()
+    local side = plot and plot:FindFirstChild("Player" .. slot)
+    local essential = side and side:FindFirstChild("Essential")
+    local atm = essential and essential:FindFirstChild("ATM")
+    local touch = atm and atm:FindFirstChild("Touch")
+
+    local root = getRoot()
+    local old = root and root.CFrame
+
+    if touch and touch:IsA("BasePart") and root then
+        teleportTo(touch)
+        task.wait(0.5)
+        restore(root, old)
+    end
+
+    teleportBusy = false
+    collectingCash = false
+end
+
+-- AUTO BUY
+
+local function parseMoney(value)
+    if type(value) == "number" then
+        return value
+    end
+
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    local clean = value:gsub(",", ""):gsub("%$", "")
+    local number, suffix = clean:match("([%d%.]+)%s*([KkMmBbTt]?)")
+
+    number = tonumber(number)
+    if not number then
+        return nil
+    end
+
+    local scale = {
+        K = 1e3,
+        M = 1e6,
+        B = 1e9,
+        T = 1e12
+    }
+
+    return number * (scale[suffix:upper()] or 1)
+end
+
+local function getCash()
+    local stats = player:FindFirstChild("leaderstats")
+
+    if stats then
+        for _, name in ipairs({"Cash", "Money"}) do
+            local obj = stats:FindFirstChild(name)
+            if obj and (
+                obj:IsA("NumberValue")
+                or obj:IsA("IntValue")
+            ) then
+                return obj.Value
+            end
+        end
+    end
+
+    for _, name in ipairs({"Cash", "Money"}) do
+        local value = player:GetAttribute(name)
+        if type(value) == "number" then
+            return value
+        end
+    end
+
+    return cachedCash
+end
+
+local function getButtonFolder()
+    return workspace:FindFirstChild(
+        "__TycoonButtons_" .. tostring(player.UserId)
+    )
+end
+
+local function excludedButton(button)
+    local name = button.Name:lower()
+
+    if name:sub(1, 9) == "teammate_" then
+        return true
+    end
+
+    if button:GetAttribute("IsTeammate") == true
+        or button:GetAttribute("CanPurchase") == false then
+        return true
+    end
+
+    local function excluded(text)
+        local s = tostring(text):lower():gsub("[^%w]", "")
+
+        return s:find("2xcash", 1, true)
+            or s:find("doublecash", 1, true)
+            or s:find("cashmultiplier", 1, true)
+            or s:find("2timescash", 1, true)
+    end
+
+    if excluded(button.Name) then
+        return true
+    end
+
+    for _, obj in ipairs(button:GetDescendants()) do
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+            if excluded(obj.Text) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function buttonPrice(button)
+    local price = parseMoney(button:GetAttribute("Price"))
+    if price then
+        return price
+    end
+
+    for _, obj in ipairs(button:GetDescendants()) do
+        if obj:IsA("TextLabel") then
+            local value = parseMoney(obj.Text)
+            if value then
+                return value
+            end
+        end
+    end
+
+    return nil
+end
+
+local function buttonPart(button)
+    local base = button:FindFirstChild("Base")
+
+    if base and base:IsA("BasePart") then
+        return base
+    end
+
+    if button:IsA("BasePart") then
+        return button
+    end
+
+    return button:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function runAutoBuy(gen)
+    local failed = {}
+    local lastCash = nil
+
+    while alive and autoBuy and gen == buyGeneration do
+        if teleportBusy then
+            task.wait(0.15)
+            continue
+        end
+
+        local cash = getCash()
+
+        if cash ~= lastCash then
+            failed = {}
+            lastCash = cash
+        end
+
+        local folder = getButtonFolder()
+        local best
+        local bestPrice = math.huge
+
+        if folder and cash then
+            for _, button in ipairs(folder:GetChildren()) do
+                if not failed[button] and not excludedButton(button) then
+                    local price = buttonPrice(button)
+                    local part = buttonPart(button)
+
+                    if price and price <= cash
+                        and part and price < bestPrice then
+                        best = {
+                            button = button,
+                            part = part
+                        }
+                        bestPrice = price
+                    end
+                end
+            end
+        end
+
+        if not best then
+            task.wait(0.5)
+            continue
+        end
+
+        teleportBusy = true
+
+        local root = getRoot()
+        local old = root and root.CFrame
+
+        teleportTo(best.part)
+
+        local deadline = os.clock() + 2
+        local purchased = false
+
+        while alive and autoBuy
+            and gen == buyGeneration
+            and os.clock() < deadline do
+
+            if not best.button.Parent
+                or best.button.Parent ~= folder then
+                purchased = true
+                break
+            end
+
+            task.wait(0.05)
+        end
+
+        restore(root, old)
+        teleportBusy = false
+
+        if not purchased then
+            failed[best.button] = true
+        end
+
+        task.wait(0.12)
+    end
+end
+
+-- PIZZA
+
+local function resetPizza()
+    pizza.session = nil
+    pizza.roundId = nil
+    pizza.actionId = nil
+    pizza.phase = nil
+    pizza.progress = 0
+    pizza.round = 0
+    pizza.revision += 1
+    pizza.starting = false
+    pizza.lastStart = 0
+    pizza.lastEvent = 0
+    pizza.remaining = {}
+    pizza.status = "Waiting for station"
+    pizza.roundStartedAt = 0
+    pizza.progressSeen = false
+    pizza.fallbackUsed = false
+end
+
+local function getPizzaStation()
+    local objects = getObjects()
+    if not objects then
+        return nil
+    end
+
+    local best
+    local bestNumber = -1
+
+    for _, station in ipairs(objects:GetChildren()) do
+        if pizzaConfig.StationNames[station.Name] then
+            local number = tonumber(
+                station.Name:match("(%d+)$")
+            ) or 0
+
+            local start = station:FindFirstChild("StartGame", true)
+            local prompt = start and start:FindFirstChildWhichIsA(
+                "ProximityPrompt",
+                true
+            )
+
+            if prompt and prompt.Enabled and number > bestNumber then
+                best = prompt
+                bestNumber = number
+            end
+        end
+    end
+
+    return best
+end
+
+local function promptPart(prompt)
+    local parent = prompt.Parent
+
+    if parent:IsA("BasePart") then
+        return parent
+    end
+
+    if parent:IsA("Attachment")
+        and parent.Parent:IsA("BasePart") then
+        return parent.Parent
+    end
+
+    local model = prompt:FindFirstAncestorOfClass("Model")
+    if model then
+        return model.PrimaryPart
+            or model:FindFirstChildWhichIsA("BasePart", true)
+    end
+
+    return nil
+end
+
+local function startPizza(gen)
+    if pizza.session or pizza.starting or teleportBusy then
+        return
+    end
+
+    pizza.starting = true
+    pizza.lastStart = os.clock()
+    pizza.status = "Starting station"
+
+    local prompt = getPizzaStation()
+
+    if prompt then
+        local part = promptPart(prompt)
+
+        if part then
+            teleportBusy = true
+            teleportTo(part)
+            task.wait(0.25)
+            teleportBusy = false
+        end
+
+        if alive and autoPizza and gen == pizzaGeneration then
+            firePrompt(prompt)
+        end
+    end
+
+    pizza.starting = false
+end
+
+local function getPizzaGui()
+    return playerGui:FindFirstChild("PizzaMaking")
+end
+
+local function getOrderName()
+    local gui = getPizzaGui()
+    local root = gui and gui:FindFirstChild("Root")
+    local recipe = root and root:FindFirstChild("Recipe")
+    local order = recipe and recipe:FindFirstChild("Order")
+
+    if order and (
+        order:IsA("TextLabel")
+        or order:IsA("TextButton")
+    ) then
+        return order.Text
+    end
+
+    return nil
+end
+
+local function getRecipeToppings()
+    local result = {}
+    local orderName = getOrderName()
+
+    if not orderName then
+        return result
+    end
+
+    local normalized = orderName:lower()
+
+    for _, recipe in ipairs(pizzaConfig.Recipes or {}) do
+        local recipeName = tostring(recipe.Name):lower()
+
+        if normalized:find(recipeName, 1, true)
+            or recipeName:find(normalized, 1, true) then
+
+            for name, count in pairs(recipe.Toppings or {}) do
+                result[name] = count
+            end
+
+            return result
+        end
+    end
+
+    return result
+end
+
+local function sendPizza(action, point, ingredient)
+    if not alive or not autoPizza then
+        return
+    end
+
+    local id = pizza.actionId or pizza.session
+
+    if not id then
+        return
+    end
+
+    pizzaRemote:FireServer(
+        id,
+        action,
+        point,
+        ingredient
+    )
+end
+
+-- PIZZA EVENT HANDLING
+
+connect(pizzaRemote.OnClientEvent, function(action, session, a, b, c)
+    if not alive or not autoPizza then
+        return
+    end
+
+    if action == "Begin" then
+        if type(session) ~= "string" then
+            return
+        end
+
+        pizza.session = session
+        pizza.roundId = nil
+        pizza.actionId = session
+        pizza.phase = "Dough"
+        pizza.progress = 0
+        pizza.round = 1
+        pizza.revision += 1
+        pizza.starting = false
+        pizza.remaining = {}
+        pizza.lastEvent = os.clock()
+        pizza.status = "Dough"
+        pizza.roundStartedAt = os.clock()
+        pizza.progressSeen = false
+        pizza.fallbackUsed = false
+
+        return
+    end
+
+    if session ~= pizza.session then
+        return
+    end
+
+    pizza.lastEvent = os.clock()
+
+    if action == "Phase" then
+        if type(a) == "string" then
+            pizza.phase = a
+            pizza.progress = 0
+            pizza.revision += 1
+            pizza.status = a
+
+            if a == "Toppings" then
+                pizza.remaining = getRecipeToppings()
+            end
+        end
+
+    elseif action == "Progress" then
+        if a == pizza.phase and type(b) == "number" then
+            pizza.progress = b
+
+            if b > 0 then
+                pizza.progressSeen = true
+            end
+        end
+
+    elseif action == "PourComplete" then
+        if a == pizza.phase then
+            pizza.progress = 1
+        end
+
+    elseif action == "Topping" then
+        if type(a) == "string" and type(c) == "number" then
+            pizza.remaining[a] = c
+        end
+
+    elseif action == "Paid" then
+        pizza.phase = "Serving"
+        pizza.progress = 1
+        pizza.status = "Paid - waiting for next round"
+
+    elseif action == "Round" then
+        pizza.roundId = a
+        pizza.round = tonumber(b) or (pizza.round + 1)
+
+        -- Only new-round handling is changed:
+        -- try the new round identifier first.
+        pizza.actionId = type(a) == "string" and a
+            or pizza.session
+
+        pizza.phase = "Dough"
+        pizza.progress = 0
+        pizza.revision += 1
+        pizza.remaining = {}
+        pizza.roundStartedAt = os.clock()
+        pizza.progressSeen = false
+        pizza.fallbackUsed = false
+        pizza.status = "Dough - next pizza"
+
+    elseif action == "End" or action == "Cancel" then
+        resetPizza()
+    end
+end)
+
+local function runAutoPizza(gen)
+    local seenRevision = -1
+    local step = 0
+    local lastTopping = 0
+
+    while alive and autoPizza and gen == pizzaGeneration do
+        if not pizza.session then
+            if not pizza.starting
+                and os.clock() - pizza.lastStart >= 2 then
+                startPizza(gen)
+            end
+
+            task.wait(0.1)
+            continue
+        end
+
+        if seenRevision ~= pizza.revision then
+            seenRevision = pizza.revision
+            step = 0
+            lastTopping = 0
+        end
+
+        local phase = pizza.phase
+
+        if phase == "Dough" then
+            if pizza.progress >= 1 then
+                task.wait(0.06)
+                continue
+            end
+
+            -- Keep first-pizza kneading movement unchanged.
+            step += 1
+
+            local angle = step * 0.28
+            local radius = 0.24
+
+            local point = Vector2.new(
+                math.cos(angle) * radius,
+                math.sin(angle) * radius
+            )
+
+            sendPizza("Knead", point, nil)
+
+            -- If a new round makes no progress, retry
+            -- using the original session identifier.
+            if pizza.round > 1
+                and not pizza.progressSeen
+                and not pizza.fallbackUsed
+                and os.clock() - pizza.roundStartedAt >= 2.5 then
+
+                pizza.actionId = pizza.session
+                pizza.fallbackUsed = true
+                pizza.revision += 1
+                pizza.status = "Dough - session retry"
+            end
+
+            task.wait(pizzaConfig.SampleInterval or 0.08)
+
+        elseif phase == "Sauce" or phase == "Cheese" then
+            if pizza.progress >= 1 then
+                task.wait(0.06)
+                continue
+            end
+
+            -- Preserve the working stationary pour.
+            sendPizza(
+                "Pour",
+                Vector2.new(-0.08625, -0.2192),
+                nil
+            )
+
+            task.wait(
+                phase == "Sauce"
+                    and (pizzaConfig.SauceStreamInterval or 0.04)
+                    or (pizzaConfig.SampleInterval or 0.08)
+            )
+
+        elseif phase == "Toppings" then
+            local chosen = nil
+
+            for _, name in ipairs({
+                "Pepperoni",
+                "Mushroom",
+                "Olive"
+            }) do
+                local remaining = pizza.remaining[name]
+
+                if remaining and remaining > 0 then
+                    chosen = name
+                    break
+                end
+            end
+
+            if chosen and os.clock() - lastTopping >= 0.14 then
+                sendPizza(
+                    "Topping",
+                    Vector2.new(0.2, 0.17),
+                    chosen
+                )
+
+                lastTopping = os.clock()
+            end
+
+            task.wait(0.05)
+
+        elseif phase == "Serving" then
+            task.wait(0.1)
+
+        else
+            task.wait(0.1)
+        end
+    end
+end
+
+-- CRATES
+
+local function getCrates()
+    local crates = {}
+
+    for _, crate in ipairs(workspace:GetChildren()) do
+        if crate.Name == "Crate" then
+            local main = crate:FindFirstChild("Main")
+            local prompt = main and main:FindFirstChild("Prompt")
+
+            if main and main:IsA("BasePart")
+                and prompt
+                and prompt:IsA("ProximityPrompt")
+                and prompt.Enabled then
+
+                table.insert(crates, {
+                    crate = crate,
+                    main = main,
+                    prompt = prompt
+                })
+            end
+        end
+    end
+
+    return crates
+end
+
+local function crateCollected(entry)
+    if not entry.crate.Parent then
+        return true
+    end
+
+    if not entry.main.Parent
+        or not entry.main:IsDescendantOf(entry.crate) then
+        return true
+    end
+
+    if not entry.prompt.Parent
+        or not entry.prompt:IsDescendantOf(entry.crate) then
+        return true
+    end
+
+    if not entry.prompt.Enabled then
+        return true
+    end
+
+    return false
+end
+
+local function collectCrate(entry, gen)
+    if teleportBusy then
+        return
+    end
+
+    local root = getRoot()
+    if not root then
+        return
+    end
+
+    teleportBusy = true
+    local old = root.CFrame
+
+    while alive and autoCrates and gen == crateGeneration do
+        if crateCollected(entry) then
+            break
+        end
+
+        if not teleportTo(entry.main) then
+            break
+        end
+
+        task.wait(0.25)
+
+        if not alive or not autoCrates
+            or gen ~= crateGeneration then
+            break
+        end
+
+        firePrompt(entry.prompt)
+
+        local deadline = os.clock() + 1.5
+
+        while alive and autoCrates
+            and gen == crateGeneration
+            and os.clock() < deadline do
+
+            if crateCollected(entry) then
+                break
+            end
+
+            task.wait(0.1)
+        end
+
+        if crateCollected(entry) then
+            break
+        end
+
+        task.wait(0.35)
+    end
+
+    restore(root, old)
+    teleportBusy = false
+end
+
+local function runAutoCrates(gen)
+    while alive and autoCrates and gen == crateGeneration do
+        if teleportBusy then
+            task.wait(0.15)
+            continue
+        end
+
+        for _, entry in ipairs(getCrates()) do
+            if not alive or not autoCrates
+                or gen ~= crateGeneration then
+                break
+            end
+
+            if not crateCollected(entry) then
+                collectCrate(entry, gen)
+            end
+        end
+
+        task.wait(0.5)
+    end
+end
+
+-- GUI
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "CheeseTycoonHub"
+gui.ResetOnSpawn = false
+gui.Parent = playerGui
+
+local frame = Instance.new("Frame")
+frame.Name = "Main"
+frame.Size = UDim2.fromOffset(250, 278)
+frame.Position = UDim2.new(0.5, -125, 0.5, -139)
+frame.BackgroundColor3 = Color3.fromRGB(28, 30, 38)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 9)
+corner.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -12, 0, 35)
+title.Position = UDim2.fromOffset(6, 3)
+title.BackgroundTransparency = 1
+title.Text = "TYCOON HUB"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 17
+title.Parent = frame
+
+local function makeButton(label, y)
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(1, -20, 0, 40)
+    button.Position = UDim2.fromOffset(10, y)
+    button.BackgroundColor3 = Color3.fromRGB(48, 51, 65)
+    button.TextColor3 = Color3.new(1, 1, 1)
+    button.TextSize = 14
+    button.Font = Enum.Font.GothamSemibold
+    button.Text = label
+    button.Parent = frame
+
+    local round = Instance.new("UICorner")
+    round.CornerRadius = UDim.new(0, 7)
+    round.Parent = button
+
+    return button
+end
+
+local cashButton = makeButton("Collect Cash [P]", 43)
+local buyButton = makeButton("Auto Buy: OFF", 89)
+local pizzaButton = makeButton("Auto Make Pizzas: OFF", 135)
+local crateButton = makeButton("Auto Collect Crates: OFF", 181)
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -16, 0, 18)
+status.Position = UDim2.fromOffset(8, 226)
+status.BackgroundTransparency = 1
+status.TextColor3 = Color3.fromRGB(190, 195, 210)
+status.Font = Enum.Font.Gotham
+status.TextSize = 11
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.Text = "Pizza: Idle"
+status.Parent = frame
+
+local footer = Instance.new("TextLabel")
+footer.Size = UDim2.new(1, -12, 0, 17)
+footer.Position = UDim2.fromOffset(6, 252)
+footer.BackgroundTransparency = 1
+footer.Text = "Comma [,] to hide / show"
+footer.TextColor3 = Color3.fromRGB(155, 160, 180)
+footer.TextSize = 11
+footer.Font = Enum.Font.Gotham
+footer.Parent = frame
+
+local function refresh()
+    buyButton.Text = "Auto Buy: " .. (autoBuy and "ON" or "OFF")
+    pizzaButton.Text = "Auto Make Pizzas: "
+        .. (autoPizza and "ON" or "OFF")
+    crateButton.Text = "Auto Collect Crates: "
+        .. (autoCrates and "ON" or "OFF")
+
+    buyButton.BackgroundColor3 = autoBuy
+        and Color3.fromRGB(40, 135, 85)
+        or Color3.fromRGB(48, 51, 65)
+
+    pizzaButton.BackgroundColor3 = autoPizza
+        and Color3.fromRGB(40, 135, 85)
+        or Color3.fromRGB(48, 51, 65)
+
+    crateButton.BackgroundColor3 = autoCrates
+        and Color3.fromRGB(40, 135, 85)
+        or Color3.fromRGB(48, 51, 65)
+
+    if autoPizza then
+        local percentage = math.floor(
+            math.clamp(pizza.progress, 0, 1) * 100
+        )
+
+        status.Text = "Pizza: " .. pizza.status
+            .. "  " .. percentage .. "%"
+    else
+        status.Text = "Pizza: Idle"
+    end
+end
+
+connect(cashButton.MouseButton1Click, function()
+    task.spawn(collectCash)
+end)
+
+connect(buyButton.MouseButton1Click, function()
+    autoBuy = not autoBuy
+    buyGeneration += 1
+
+    if autoBuy then
+        task.spawn(runAutoBuy, buyGeneration)
+    end
+
+    refresh()
+end)
+
+connect(pizzaButton.MouseButton1Click, function()
+    autoPizza = not autoPizza
+    pizzaGeneration += 1
+    resetPizza()
+
+    if autoPizza then
+        task.spawn(runAutoPizza, pizzaGeneration)
+    end
+
+    refresh()
+end)
+
+connect(crateButton.MouseButton1Click, function()
+    autoCrates = not autoCrates
+    crateGeneration += 1
+
+    if autoCrates then
+        task.spawn(runAutoCrates, crateGeneration)
+    end
+
+    refresh()
+end)
+
+connect(UIS.InputBegan, function(input, processed)
+    if processed or not alive then
+        return
+    end
+
+    if input.KeyCode == Enum.KeyCode.P then
+        task.spawn(collectCash)
+    elseif input.KeyCode == Enum.KeyCode.Comma then
+        frame.Visible = not frame.Visible
+    end
+end)
+
+local tycoonFolder = RS:FindFirstChild("Tycoon")
+local buttonRemote = tycoonFolder
+    and tycoonFolder:FindFirstChild("TycoonButtonEvent")
+
+if buttonRemote then
+    connect(buttonRemote.OnClientEvent, function(action, data)
+        if type(data) ~= "table" then
+            return
+        end
+
+        if action ~= "Snapshot" and action ~= "State" then
+            return
+        end
+
+        local plot, slot = getPlot()
+
+        if plot
+            and data.tycoon == plot
+            and data.slot == slot
+            and type(data.cash) == "number" then
+            cachedCash = data.cash
+        end
+    end)
+end
+
+task.spawn(function()
+    while alive do
+        refresh()
+        task.wait(0.2)
+    end
+end)
+
+-- CLEANUP
+
+_G.CheeseHubCleanup = function()
+    alive = false
+
+    autoBuy = false
+    autoPizza = false
+    autoCrates = false
+
+    buyGeneration += 1
+    pizzaGeneration += 1
+    crateGeneration += 1
+
+    resetPizza()
+
+    for _, connection in ipairs(connections) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+
+    table.clear(connections)
+
+    if gui then
+        gui:Destroy()
+    end
+
+    _G.CheeseHubCleanup = nil
+end
+
+refresh()
