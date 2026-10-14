@@ -1,0 +1,629 @@
+
+-- Cheese Tycoon Hub
+-- Collect Cash [P] + Auto Buy
+-- Dynamic buttons, cheapest first, excludes 2x Cash
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RS = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+
+if _G.CheeseHubCleanup then
+    pcall(_G.CheeseHubCleanup)
+end
+
+local alive = true
+local buying = false
+local collecting = false
+local buyRun = 0
+local savedPosition = nil
+local connections = {}
+
+local latestState = nil
+local cashVersion = 0
+
+local function connect(signal, callback)
+    local c = signal:Connect(callback)
+    table.insert(connections, c)
+    return c
+end
+
+local function rootPart()
+    local character = player.Character
+    return character and
+        character:FindFirstChild("HumanoidRootPart")
+end
+
+local function parseMoney(value)
+    if type(value) == "number" then
+        return value
+    end
+
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    local clean = value:gsub(",", ""):gsub("%$", "")
+    local n, suffix = clean:match(
+        "([%d%.]+)%s*([KkMmBbTt]?)"
+    )
+
+    n = tonumber(n)
+    if not n then return nil end
+
+    local multipliers = {
+        K = 1e3,
+        M = 1e6,
+        B = 1e9,
+        T = 1e12
+    }
+
+    return n * (multipliers[suffix:upper()] or 1)
+end
+
+local function findATM()
+    local tycoons = workspace:FindFirstChild("Tycoons")
+    local cheese = tycoons and
+        tycoons:FindFirstChild("Cheese Tycoon")
+    local base = cheese and cheese:FindFirstChild("Player2")
+    local essential = base and base:FindFirstChild("Essential")
+    local atm = essential and essential:FindFirstChild("ATM")
+    return atm and atm:FindFirstChild("Touch")
+end
+
+-- GUI
+local gui = Instance.new("ScreenGui")
+gui.Name = "CheeseTycoonHub"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(235, 155)
+frame.Position = UDim2.new(0.5, -117, 0.5, -77)
+frame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+frame.Active = true
+frame.Draggable = true
+frame.Parent = gui
+
+Instance.new("UICorner", frame).CornerRadius =
+    UDim.new(0, 10)
+
+local function createButton(label, y, color)
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(1, -20, 0, 45)
+    button.Position = UDim2.fromOffset(10, y)
+    button.BackgroundColor3 = color
+    button.TextColor3 = Color3.new(1, 1, 1)
+    button.Font = Enum.Font.GothamBold
+    button.TextSize = 15
+    button.Text = label
+    button.Parent = frame
+
+    Instance.new("UICorner", button).CornerRadius =
+        UDim.new(0, 8)
+
+    return button
+end
+
+local collectButton = createButton(
+    "Collect Cash [P]",
+    12,
+    Color3.fromRGB(45, 150, 75)
+)
+
+local buyButton = createButton(
+    "Auto Buy: OFF",
+    66,
+    Color3.fromRGB(160, 45, 45)
+)
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -12, 0, 27)
+status.Position = UDim2.fromOffset(6, 119)
+status.BackgroundTransparency = 1
+status.TextColor3 = Color3.fromRGB(210, 210, 210)
+status.Font = Enum.Font.Gotham
+status.TextSize = 11
+status.TextWrapped = true
+status.Text = "Ready"
+status.Parent = frame
+
+local function setStatus(message)
+    if alive then
+        status.Text = message
+    end
+end
+
+local function updateBuyButton()
+    buyButton.Text = buying
+        and "Auto Buy: ON"
+        or "Auto Buy: OFF"
+
+    buyButton.BackgroundColor3 = buying
+        and Color3.fromRGB(45, 150, 75)
+        or Color3.fromRGB(160, 45, 45)
+end
+
+-- Cash collection
+local function collectCash()
+    if not alive or collecting or buying then
+        return
+    end
+
+    collecting = true
+    collectButton.Text = "Collecting..."
+
+    local root = rootPart()
+    local atm = findATM()
+
+    if root and atm and atm:IsA("BasePart") then
+        local oldPosition = root.CFrame
+
+        root.CFrame = atm.CFrame *
+            CFrame.new(0, atm.Size.Y / 2 + 2.5, 0)
+
+        task.wait(0.5)
+
+        if alive and root.Parent then
+            root.CFrame = oldPosition
+        end
+
+        setStatus("Cash collection attempted")
+    else
+        setStatus("ATM not found")
+    end
+
+    if alive then
+        collectButton.Text = "Collect Cash [P]"
+    end
+
+    collecting = false
+end
+
+-- Read cash balance
+local function getCash()
+    local stats = player:FindFirstChild("leaderstats")
+
+    if stats then
+        for _, name in ipairs({
+            "Cash", "Money", "Coins"
+        }) do
+            local v = stats:FindFirstChild(name)
+            if v and (
+                v:IsA("NumberValue") or
+                v:IsA("IntValue")
+            ) then
+                return v.Value
+            end
+        end
+    end
+
+    for _, name in ipairs({
+        "Cash", "Money", "Coins"
+    }) do
+        local v = player:GetAttribute(name)
+        if type(v) == "number" then
+            return v
+        end
+    end
+
+    if latestState and
+        type(latestState.cash) == "number" then
+        return latestState.cash
+    end
+
+    -- GUI fallback: only explicitly named cash labels
+    local playerGui = player:FindFirstChild("PlayerGui")
+
+    if playerGui then
+        for _, obj in ipairs(playerGui:GetDescendants()) do
+            if obj:IsA("TextLabel") then
+                local name = obj.Name:lower()
+
+                if name == "cash" or
+                    name == "cashlabel" or
+                    name == "money" or
+                    name == "moneylabel" then
+
+                    local value = parseMoney(obj.Text)
+                    if value then return value end
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+-- Dynamic tycoon folders
+local function getFolders()
+    local folders = {}
+
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj.Name:match("^__TycoonButtons_%d+$") then
+            table.insert(folders, obj)
+        end
+    end
+
+    return folders
+end
+
+local function matchesPlayer(value)
+    if value == nil then return false end
+
+    return tostring(value) == tostring(player.UserId)
+        or tostring(value) == player.Name
+end
+
+local function ownsFolder(folder)
+    for _, key in ipairs({
+        "Owner", "OwnerId", "UserId",
+        "Player", "PlayerId"
+    }) do
+        if matchesPlayer(folder:GetAttribute(key)) then
+            return true
+        end
+
+        local obj = folder:FindFirstChild(key)
+
+        if obj then
+            if obj:IsA("ObjectValue") and
+                obj.Value == player then
+                return true
+            end
+
+            if obj:IsA("ValueBase") then
+                local ok, value = pcall(function()
+                    return obj.Value
+                end)
+
+                if ok and matchesPlayer(value) then
+                    return true
+                end
+            end
+        end
+    end
+
+    return false
+end
+
+local function findMyFolder()
+    for _, folder in ipairs(getFolders()) do
+        if ownsFolder(folder) then
+            return folder
+        end
+    end
+
+    return nil
+end
+
+-- Exclude 2x Cash buttons
+local function normalized(text)
+    return tostring(text):lower():gsub("[^%w]", "")
+end
+
+local function isExcluded(button)
+    local function check(text)
+        local s = normalized(text)
+
+        return s:find("2xcash", 1, true)
+            or s:find("doublecash", 1, true)
+            or s:find("cashmultiplier", 1, true)
+            or s:find("2timescash", 1, true)
+    end
+
+    if check(button.Name) then
+        return true
+    end
+
+    for _, obj in ipairs(button:GetDescendants()) do
+        if check(obj.Name) then
+            return true
+        end
+
+        if obj:IsA("TextLabel") or
+            obj:IsA("TextButton") then
+            if check(obj.Text) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function getPrice(button)
+    for _, name in ipairs({
+        "Price", "Cost", "Cash",
+        "Amount", "PurchasePrice", "ButtonPrice"
+    }) do
+        local value = parseMoney(button:GetAttribute(name))
+
+        if value then return value end
+
+        local child = button:FindFirstChild(name, true)
+
+        if child and child:IsA("ValueBase") then
+            local ok, result = pcall(function()
+                return child.Value
+            end)
+
+            if ok then
+                value = parseMoney(result)
+                if value then return value end
+            end
+        end
+    end
+
+    for _, obj in ipairs(button:GetDescendants()) do
+        if obj:IsA("TextLabel") or
+            obj:IsA("TextButton") then
+
+            local money = obj.Text:match(
+                "%$[%d%.,]+[KkMmBbTt]?"
+            )
+
+            if money then
+                return parseMoney(money)
+            end
+        end
+    end
+
+    return nil
+end
+
+local function getTouchPart(obj)
+    if obj:IsA("BasePart") then
+        return obj
+    end
+
+    for _, name in ipairs({
+        "Touch", "Button", "Hitbox",
+        "Purchase", "Part"
+    }) do
+        local part = obj:FindFirstChild(name, true)
+
+        if part and part:IsA("BasePart") then
+            return part
+        end
+    end
+
+    if obj:IsA("Model") then
+        return obj.PrimaryPart or
+            obj:FindFirstChildWhichIsA("BasePart", true)
+    end
+
+    return nil
+end
+
+local function getButtons(folder)
+    local results = {}
+
+    for _, obj in ipairs(folder:GetChildren()) do
+        if not isExcluded(obj) then
+            local part = getTouchPart(obj)
+            local price = getPrice(obj)
+
+            if part and price then
+                table.insert(results, {
+                    object = obj,
+                    part = part,
+                    price = price
+                })
+            end
+        end
+    end
+
+    table.sort(results, function(a, b)
+        if a.price == b.price then
+            return a.object.Name < b.object.Name
+        end
+        return a.price < b.price
+    end)
+
+    return results
+end
+
+local function stopBuying(message)
+    buying = false
+    buyRun = buyRun + 1
+    updateBuyButton()
+
+    local root = rootPart()
+
+    if root and savedPosition then
+        root.CFrame = savedPosition
+    end
+
+    savedPosition = nil
+
+    if message then
+        setStatus(message)
+    end
+end
+
+local function startBuying()
+    if buying or collecting then return end
+
+    local root = rootPart()
+
+    if not root then
+        setStatus("Character unavailable")
+        return
+    end
+
+    buying = true
+    buyRun = buyRun + 1
+
+    local currentRun = buyRun
+    savedPosition = root.CFrame
+
+    updateBuyButton()
+
+    task.spawn(function()
+        local failed = {}
+
+        while alive and buying and buyRun == currentRun do
+            local folder = findMyFolder()
+
+            if not folder then
+                stopBuying("Cannot identify your tycoon folder")
+                break
+            end
+
+            local cash = getCash()
+
+            if cash == nil then
+                stopBuying("Cash balance unavailable")
+                break
+            end
+
+            local buttons = getButtons(folder)
+            local chosen = nil
+            local cheapest = nil
+
+            for _, entry in ipairs(buttons) do
+                cheapest = cheapest or entry.price
+
+                if entry.price <= cash and
+                    not failed[entry.object] then
+                    chosen = entry
+                    break
+                end
+            end
+
+            if not chosen then
+                if #buttons == 0 then
+                    stopBuying("No eligible buttons found")
+                elseif cheapest and cheapest > cash then
+                    stopBuying("Not enough cash - Auto Buy OFF")
+                else
+                    stopBuying("No affordable buttons remain")
+                end
+
+                break
+            end
+
+            root = rootPart()
+
+            if not root then
+                stopBuying("Character unavailable")
+                break
+            end
+
+            setStatus(
+                "Buying $" .. tostring(chosen.price)
+            )
+
+            root.CFrame = chosen.part.CFrame *
+                CFrame.new(
+                    0,
+                    chosen.part.Size.Y / 2 + 2.5,
+                    0
+                )
+
+            local purchased = false
+            local deadline = os.clock() + 5
+
+            while alive and buying and
+                buyRun == currentRun and
+                os.clock() < deadline do
+
+                if not chosen.object:IsDescendantOf(folder) then
+                    purchased = true
+                    break
+                end
+
+                task.wait(0.15)
+            end
+
+            if not alive or not buying or
+                buyRun ~= currentRun then
+                break
+            end
+
+            if purchased then
+                failed[chosen.object] = nil
+                setStatus("Purchased - finding next")
+                task.wait(0.2)
+            else
+                failed[chosen.object] = true
+                setStatus("Purchase not confirmed")
+                task.wait(0.3)
+            end
+        end
+    end)
+end
+
+-- Income notification
+local remotes = RS:FindFirstChild("Remotes")
+local incomeEvent = remotes and
+    remotes:FindFirstChild("Event")
+
+if incomeEvent and incomeEvent:IsA("RemoteEvent") then
+    connect(incomeEvent.OnClientEvent, function(action, ...)
+        if action == "Income" then
+            cashVersion = cashVersion + 1
+
+            if buying then
+                setStatus("Income changed - refreshing")
+            end
+        end
+    end)
+end
+
+-- Tycoon state notification
+local tycoon = RS:FindFirstChild("Tycoon")
+local stateEvent = tycoon and
+    tycoon:FindFirstChild("TycoonButtonEvent")
+
+if stateEvent and stateEvent:IsA("RemoteEvent") then
+    connect(stateEvent.OnClientEvent, function(action, data)
+        if action == "State" and
+            type(data) == "table" then
+
+            latestState = data
+            cashVersion = cashVersion + 1
+        end
+    end)
+end
+
+-- Controls
+connect(collectButton.MouseButton1Click, function()
+    task.spawn(collectCash)
+end)
+
+connect(buyButton.MouseButton1Click, function()
+    if buying then
+        stopBuying("Auto Buy stopped")
+    else
+        startBuying()
+    end
+end)
+
+connect(UIS.InputBegan, function(input, processed)
+    if processed then return end
+
+    if input.KeyCode == Enum.KeyCode.P then
+        task.spawn(collectCash)
+    end
+end)
+
+_G.CheeseHubCleanup = function()
+    alive = false
+    buying = false
+    buyRun = buyRun + 1
+
+    local root = rootPart()
+
+    if root and savedPosition then
+        root.CFrame = savedPosition
+    end
+
+    for _, connection in ipairs(connections) do
+        connection:Disconnect()
+    end
+
+    gui:Destroy()
+end
